@@ -348,6 +348,11 @@ export function wrapChatResponseUsageStream(
           useTurnUsageStore.getState().setSnapshot(pendingUsage);
           schedulePatchLastResponseCardUsage(chatRef, pendingUsage);
         }
+        // The turn has settled (success or an in-stream error).  Listeners
+        // such as the chat model selector use this to refresh the runtime
+        // model pointer — automatic failover may have switched models
+        // mid-turn.
+        window.dispatchEvent(new CustomEvent("chat-turn-settled"));
       },
     }),
   );

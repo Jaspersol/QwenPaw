@@ -256,14 +256,18 @@ class AgentBuilder:
         )
         ctx.agent_config = agent_config
 
-        # Validate model availability.
+        # Validate model availability.  When the global priority-ordered
+        # default-model chain is configured, it replaces the single active
+        # model, so no active slot is required.
+        manager = ProviderManager.get_instance()
         active = agent_config.active_model
         if not (active and active.provider_id and active.model):
-            active = ProviderManager.get_instance().get_active_model()
-        if active is None or not active.provider_id or not active.model:
-            raise RuntimeError(
-                "No active model configured; pick one in the UI",
-            )
+            active = manager.get_active_model()
+        if not manager.get_fallback_models():
+            if active is None or not active.provider_id or not active.model:
+                raise RuntimeError(
+                    "No active model configured; pick one in the UI",
+                )
 
         workspace_dir = getattr(ctx, "workspace_dir", None)
 
@@ -442,13 +446,21 @@ class AgentBuilder:
         if ctx.session_state:
             agent.load_state_dict(ctx.session_state)
 
+        if active is not None and active.provider_id and active.model:
+            model_slot_log = f"{active.provider_id}/{active.model}"
+        else:
+            chain = manager.get_fallback_models()
+            model_slot_log = (
+                f"fallback-chain[{len(chain)}]"
+                if chain
+                else "none"
+            )
         _logger.info(
             "builder: built agent for session=%s agent=%s"
-            " model=%s/%s tools=%d",
+            " model=%s tools=%d",
             getattr(ctx, "session_id", ""),
             agent_id,
-            active.provider_id,
-            active.model,
+            model_slot_log,
             len(agent.toolkit.tool_groups[0].tools),
         )
         return agent

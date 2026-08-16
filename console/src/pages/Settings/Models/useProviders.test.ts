@@ -5,6 +5,7 @@ const hoisted = vi.hoisted(() => ({
   apiMocks: {
     listProviders: vi.fn(),
     getActiveModels: vi.fn(),
+    getFallbackModels: vi.fn(),
   },
 }));
 
@@ -25,13 +26,16 @@ describe("useProviders", () => {
   beforeEach(() => {
     apiMocks.listProviders.mockReset();
     apiMocks.getActiveModels.mockReset();
+    apiMocks.getFallbackModels.mockReset();
   });
 
   it("loads providers and active models on mount", async () => {
     const providers = [{ provider: "openai" }];
     const active = { models: [] };
+    const fallback = { models: [], current: null };
     apiMocks.listProviders.mockResolvedValue(providers);
     apiMocks.getActiveModels.mockResolvedValue(active);
+    apiMocks.getFallbackModels.mockResolvedValue(fallback);
 
     const { result } = renderHook(() => useProviders());
 
@@ -40,12 +44,14 @@ describe("useProviders", () => {
     });
     expect(result.current.providers).toEqual(providers);
     expect(result.current.activeModels).toEqual(active);
+    expect(result.current.fallbackModels).toEqual(fallback);
     expect(apiMocks.getActiveModels).toHaveBeenCalledWith({ scope: "global" });
   });
 
   it("sets error with 'Unexpected API response' when listProviders returns non-array", async () => {
     apiMocks.listProviders.mockResolvedValue({ not: "array" });
     apiMocks.getActiveModels.mockResolvedValue({});
+    apiMocks.getFallbackModels.mockResolvedValue({ models: [] });
 
     const { result } = renderHook(() => useProviders());
 
@@ -58,6 +64,7 @@ describe("useProviders", () => {
   it("sets error message on fetch failure", async () => {
     apiMocks.listProviders.mockRejectedValue(new Error("fetch failed"));
     apiMocks.getActiveModels.mockResolvedValue({});
+    apiMocks.getFallbackModels.mockResolvedValue({ models: [] });
 
     const { result } = renderHook(() => useProviders());
 
@@ -69,6 +76,7 @@ describe("useProviders", () => {
   it("uses fallback message when rejection is not an Error", async () => {
     apiMocks.listProviders.mockRejectedValue("oops");
     apiMocks.getActiveModels.mockResolvedValue({});
+    apiMocks.getFallbackModels.mockResolvedValue({ models: [] });
 
     const { result } = renderHook(() => useProviders());
 

@@ -15,6 +15,7 @@ import {
   ProviderGroupCard,
   CustomProviderModal,
   ModelsSection,
+  FallbackModelsSection,
   ProviderConfigModal,
   ModelManageModal,
 } from "./components";
@@ -36,7 +37,14 @@ import styles from "./index.module.less";
 function ModelsPage() {
   const { t } = useTranslation();
   const [searchParams, setSearchParams] = useSearchParams();
-  const { providers, activeModels, loading, error, fetchAll } = useProviders();
+  const {
+    providers,
+    activeModels,
+    fallbackModels,
+    loading,
+    error,
+    fetchAll,
+  } = useProviders();
   const [addProviderOpen, setAddProviderOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   // Prevent browsers from autofilling the search input with saved credentials
@@ -55,6 +63,7 @@ function ModelsPage() {
     providers: ProviderInfo[];
   } | null>(null);
   const [llmModalOpen, setLlmModalOpen] = useState(false);
+  const [fallbackModalOpen, setFallbackModalOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<"cloud" | "local">(() => {
     const stored = localStorage.getItem("models_tab");
     return stored === "local" ? "local" : "cloud";
@@ -333,6 +342,30 @@ function ModelsPage() {
                       {t("common.edit")}
                     </span>
                   </div>
+                  {/* ---- Fallback chain pill ---- */}
+                  <div
+                    className={[
+                      styles.llmPill,
+                      styles.fallbackPill,
+                    ].join(" ")}
+                    onClick={() => setFallbackModalOpen(true)}
+                    title={t("models.fallbackPillHint")}
+                  >
+                    <span className={styles.fallbackPillIcon}>
+                      <span className={styles.fallbackPillDot} />
+                    </span>
+                    <span className={styles.llmPillLabel}>
+                      {t("models.fallbackChain")}:
+                    </span>
+                    <span className={styles.fallbackPillValue}>
+                      {t("models.fallbackCount", {
+                        count: fallbackModels?.models?.length ?? 0,
+                      })}
+                    </span>
+                    <span className={styles.llmPillEdit}>
+                      {t("common.edit")}
+                    </span>
+                  </div>
                   {/* ---- Search ---- */}
                   <div className={styles.searchRow}>
                     <Input
@@ -555,6 +588,22 @@ function ModelsPage() {
                 onSaved={() => {
                   fetchAll();
                   setLlmModalOpen(false);
+                }}
+              />
+            </Modal>
+
+            <Modal
+              open={fallbackModalOpen}
+              title={t("models.fallbackChain")}
+              footer={null}
+              onCancel={() => setFallbackModalOpen(false)}
+              destroyOnClose
+              width={560}
+            >
+              <FallbackModelsSection
+                providers={providers}
+                onSaved={() => {
+                  fetchAll();
                 }}
               />
             </Modal>

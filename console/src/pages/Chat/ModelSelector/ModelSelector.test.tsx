@@ -13,6 +13,7 @@ vi.mock("@/api/modules/provider", () => ({
     listProviders: vi.fn(),
     getActiveModels: vi.fn(),
     setActiveLlm: vi.fn(),
+    getFallbackModels: vi.fn(),
   },
 }));
 
@@ -98,6 +99,10 @@ function setupDefaultMocks() {
   vi.mocked(providerApi.listProviders).mockResolvedValue([mockProvider]);
   vi.mocked(providerApi.getActiveModels).mockResolvedValue(mockActiveModels);
   vi.mocked(providerApi.setActiveLlm).mockResolvedValue({});
+  vi.mocked(providerApi.getFallbackModels).mockResolvedValue({
+    models: [],
+    current: null,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -261,5 +266,98 @@ describe("ModelSelector", () => {
     await waitFor(() => {
       expect(screen.getAllByText("GPT-4").length).toBeGreaterThanOrEqual(1);
     });
+  });
+
+  it("displays the failover pointer slot when the fallback chain is active", async () => {
+    vi.mocked(providerApi.getFallbackModels).mockResolvedValue({
+      models: [
+        {
+          provider_id: "openai",
+          model: "gpt-4",
+          provider_name: "OpenAI",
+          model_name: "GPT-4",
+        },
+        {
+          provider_id: "openai",
+          model: "gpt-3.5-turbo",
+          provider_name: "OpenAI",
+          model_name: "GPT-3.5 Turbo",
+        },
+      ],
+      current: { provider_id: "openai", model: "gpt-3.5-turbo" },
+    });
+    vi.mocked(providerApi.getActiveModels).mockResolvedValue({
+      ...mockActiveModels,
+      // Deliberately stale: the pointer has moved past this in-chain slot.
+      runtime_active_llm: {
+        provider_id: "openai",
+        model: "gpt-4",
+      },
+    });
+
+    renderWithProviders(<ModelSelector />);
+
+    expect(
+      (await screen.findAllByText("GPT-3.5 Turbo"))[0],
+    ).toBeInTheDocument();
+    expect(screen.getByText("modelSelector.autoBadge")).toBeInTheDocument();
+  });
+
+  it("displays a manually selected model outside the fallback chain instead of the chain head", async () => {
+    vi.mocked(providerApi.getFallbackModels).mockResolvedValue({
+      models: [
+        {
+          provider_id: "openai",
+          model: "gpt-4",
+          provider_name: "OpenAI",
+          model_name: "GPT-4",
+        },
+      ],
+      current: { provider_id: "openai", model: "gpt-4" },
+    });
+    vi.mocked(providerApi.getActiveModels).mockResolvedValue({
+      active_llm: {
+        provider_id: "openai",
+        model: "gpt-3.5-turbo",
+      },
+      runtime_active_llm: {
+        provider_id: "openai",
+        model: "gpt-3.5-turbo",
+      },
+    });
+
+    renderWithProviders(<ModelSelector />);
+
+    expect(
+      (await screen.findAllByText("GPT-3.5 Turbo"))[0],
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("modelSelector.autoBadge"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("falls back to the fallback pointer slot for older backends without runtime_active_llm", async () => {
+    vi.mocked(providerApi.getFallbackModels).mockResolvedValue({
+      models: [
+        {
+          provider_id: "openai",
+          model: "gpt-4",
+          provider_name: "OpenAI",
+          model_name: "GPT-4",
+        },
+      ],
+      current: { provider_id: "openai", model: "gpt-4" },
+    });
+    vi.mocked(providerApi.getActiveModels).mockResolvedValue({
+      active_llm: {
+        provider_id: "openai",
+        model: "gpt-3.5-turbo",
+      },
+    });
+
+    renderWithProviders(<ModelSelector />);
+
+    expect((await screen.findAllByText("GPT-4"))[0]).toBeInTheDocument();
+    expect(screen.getByText("modelSelector.autoBadge")).toBeInTheDocument();
   });
 });

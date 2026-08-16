@@ -189,6 +189,35 @@ class ExternalServiceException(AgentRuntimeErrorException):
         )
 
 
+class ModelFallbackExhaustedException(AgentRuntimeErrorException):
+    """Every model in the priority fallback chain failed.
+
+    Raised by :class:`qwenpaw.providers.fallback_chat_model.FallbackChatModel`
+    once the last configured model has also crossed the recent-failure-rate
+    retire threshold.  ``attempted`` lists the ``"provider_id/model"`` slots
+    that were tried, in priority order.
+    """
+
+    def __init__(
+        self,
+        attempted: list[str],
+        details: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self.attempted = attempted
+        message = (
+            "All configured default models failed. Tried: "
+            + ", ".join(attempted)
+            + ". Please check the model configuration."
+        )
+        super().__init__(
+            error_code="MODEL_FALLBACK_EXHAUSTED",
+            message=message,
+            details=details,
+            **kwargs,
+        )
+
+
 class ModelNotFoundException(AgentRuntimeErrorException):
     """Provider does not host the requested model."""
 
@@ -688,6 +717,11 @@ def convert_model_exception(  # pylint: disable=too-many-return-statements
         "original_error_type": type(exc).__name__,
         "original_error_message": str(exc),
     }
+
+    # The fallback-chain terminal error is already a user-readable,
+    # normalized exception (it lists the tried models) — surface it as-is.
+    if isinstance(exc, ModelFallbackExhaustedException):
+        return exc
 
     # Level 0: Check if this is a model-related error
     if not _is_model_related_error(exc):

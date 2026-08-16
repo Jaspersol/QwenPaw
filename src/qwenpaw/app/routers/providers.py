@@ -57,20 +57,92 @@ async def get_provider_manager(request: Request) -> ProviderManager:
     return request.app.state.provider_manager
 
 
+def _slot_in_fallback(
+    slot: ModelSlotConfig | None,
+    fallback_models: List[ModelSlotConfig],
+) -> bool:
+    """Return *True* when *slot* matches an entry in the failover chain."""
+    if not slot or not slot.provider_id or not slot.model:
+        return False
+    return any(
+        entry.provider_id == slot.provider_id and entry.model == slot.model
+        for entry in fallback_models
+    )
+
+
+def _fallback_current_slot(
+    manager: ProviderManager,
+    fallback_models: List[ModelSlotConfig],
+) -> ModelSlotConfig | None:
+    """Return the slot the failover pointer currently selects, if valid."""
+    if not fallback_models:
+        return None
+    try:
+        from ...providers.fallback_chat_model import (
+            get_fallback_current_index,
+        )
+
+        index = get_fallback_current_index()
+    except Exception:  # pragma: no cover - defensive
+        index = 0
+    if 0 <= index < len(fallback_models):
+        return fallback_models[index]
+    return None
+
+
+def _resolve_runtime_active_llm(
+    manager: ProviderManager,
+    active_llm: ModelSlotConfig | None,
+    *,
+    configured_by_agent: bool,
+) -> ModelSlotConfig | None:
+    """Resolve the model the runtime actually uses.
+
+    Mirrors ``create_model_and_formatter``: when a non-empty failover chain
+    is configured the chain normally wins.  The only exception is an
+    explicit agent-level model that is *not* part of the chain — that is an
+    in-session manual switch and is used directly, with the failover pointer
+    reset to the list head for the next in-chain switch.
+    """
+    fallback_models = getattr(manager, "get_fallback_models", lambda: [])()
+    if not fallback_models:
+        return active_llm
+
+    if (
+        configured_by_agent
+        and active_llm
+        and active_llm.provider_id
+        and active_llm.model
+        and not _slot_in_fallback(active_llm, fallback_models)
+    ):
+        return active_llm
+
+    return _fallback_current_slot(manager, fallback_models) or active_llm
+
+
 def _active_models_info(
     manager: ProviderManager,
     active_llm: ModelSlotConfig | None,
+    *,
+    configured_by_agent: bool = False,
 ) -> ActiveModelsInfo:
     """Build active-model metadata using the runtime context resolver."""
+    runtime_active_llm = _resolve_runtime_active_llm(
+        manager,
+        active_llm,
+        configured_by_agent=configured_by_agent,
+    )
+    effective_slot = runtime_active_llm or active_llm
     effective_max_input_length = None
-    if active_llm and active_llm.provider_id and active_llm.model:
-        provider = manager.get_provider(active_llm.provider_id)
+    if effective_slot and effective_slot.provider_id and effective_slot.model:
+        provider = manager.get_provider(effective_slot.provider_id)
         if provider is not None:
             effective_max_input_length = provider.get_context_size(
-                active_llm.model,
+                effective_slot.model,
             )
     return ActiveModelsInfo(
         active_llm=active_llm,
+        runtime_active_llm=runtime_active_llm,
         effective_max_input_length=effective_max_input_length,
     )
 
@@ -658,6 +730,7 @@ async def get_active_models(
         return _active_models_info(
             manager,
             await _load_agent_model(request, agent_id),
+            configured_by_agent=True,
         )
 
     try:
@@ -673,7 +746,11 @@ async def get_active_models(
                 target_agent_id,
                 agent_model,
             )
-            return _active_models_info(manager, agent_model)
+            return _active_models_info(
+                manager,
+                agent_model,
+                configured_by_agent=True,
+            )
     except (
         HTTPException,
         OSError,
@@ -778,13 +855,157 @@ async def set_active_model(
 
     manager.maybe_probe_multimodal(body.provider_id, body.model)
 
+    # Reflect the in-session switch in the priority-ordered default-model
+    # chain.  Switching to a model that is part of the chain moves the
+    # failover pointer to that model (subsequent auto-switching continues
+    # from there); switching to a model outside the chain resets the pointer
+    # to the list head (the model itself is used directly via the agent's
+    # active_model above).
+    fallback_models = manager.get_fallback_models()
+    if fallback_models:
+        from ...providers.fallback_chat_model import (
+            reset_fallback_state,
+            set_fallback_current_index,
+        )
+
+        index = next(
+            (
+                i
+                for i, slot in enumerate(fallback_models)
+                if slot.provider_id == body.provider_id
+                and slot.model == body.model
+            ),
+            None,
+        )
+        if index is not None:
+            set_fallback_current_index(index)
+        else:
+            reset_fallback_state()
+
     return _active_models_info(
         manager,
         ModelSlotConfig(
             provider_id=body.provider_id,
             model=body.model,
         ),
+        configured_by_agent=True,
     )
+
+
+# =============================================================================
+# Priority-ordered default-model chain (failover)
+# =============================================================================
+
+
+class FallbackModelEntry(BaseModel):
+    """One entry in the priority-ordered default-model chain."""
+
+    provider_id: str = Field(..., description="Provider ID")
+    model: str = Field(..., description="Model identifier")
+
+
+class FallbackModelsRequest(BaseModel):
+    """Request body for replacing the whole chain (order = priority)."""
+
+    models: List[FallbackModelEntry] = Field(
+        default_factory=list,
+        description=(
+            "Priority-ordered entries. Entry 0 is used first; when a slot's "
+            "recent failure rate crosses the retire threshold the runtime "
+            "moves to the next entry."
+        ),
+    )
+
+
+class FallbackModelInfo(FallbackModelEntry):
+    """Chain entry enriched with display names for the UI."""
+
+    provider_name: str = Field(default="")
+    model_name: str = Field(default="")
+
+
+class FallbackModelsResponse(BaseModel):
+    """Full fallback-chain state exposed to the UI."""
+
+    models: List[FallbackModelInfo] = Field(default_factory=list)
+    current: Optional[ModelSlotConfig] = Field(
+        default=None,
+        description="Slot the failover pointer currently selects.",
+    )
+
+
+@router.get(
+    "/fallback-models",
+    response_model=FallbackModelsResponse,
+    summary="Get the priority-ordered default-model chain",
+)
+async def get_fallback_models(
+    manager: ProviderManager = Depends(get_provider_manager),
+) -> FallbackModelsResponse:
+    """Return the configured default-model chain (empty by default) plus the
+    slot the failover pointer currently selects."""
+    info = manager.get_fallback_models_info()
+    current: Optional[ModelSlotConfig] = None
+    try:
+        from ...providers.fallback_chat_model import (
+            get_fallback_current_index,
+        )
+
+        index = get_fallback_current_index()
+        slots = manager.get_fallback_models()
+        if index < len(slots):
+            current = slots[index]
+    except Exception:  # pragma: no cover - defensive
+        logger.warning(
+            "Failed to resolve current fallback slot",
+            exc_info=True,
+        )
+    return FallbackModelsResponse(models=info, current=current)
+
+
+@router.put(
+    "/fallback-models",
+    response_model=FallbackModelsResponse,
+    summary="Replace the priority-ordered default-model chain",
+)
+async def set_fallback_models(
+    body: FallbackModelsRequest = Body(...),
+    manager: ProviderManager = Depends(get_provider_manager),
+) -> FallbackModelsResponse:
+    """Validate and persist the priority-ordered default-model chain.
+
+    Order is preserved and becomes the failover priority.  An empty list
+    disables the feature and restores the single active-model behaviour.
+    """
+    slots: List[ModelSlotConfig] = []
+    for entry in body.models:
+        provider = manager.get_provider(entry.provider_id)
+        if provider is None:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Provider '{entry.provider_id}' not found."
+                ),
+            )
+        if not provider.has_model(entry.model):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Model '{entry.model}' is not configured on "
+                    f"provider '{entry.provider_id}'."
+                ),
+            )
+        slots.append(
+            ModelSlotConfig(
+                provider_id=entry.provider_id,
+                model=entry.model,
+            ),
+        )
+    manager.set_fallback_models(slots)
+
+    info = manager.get_fallback_models_info()
+    current = slots[0] if slots else None
+    return FallbackModelsResponse(models=info, current=current)
 
 
 # =============================================================================

@@ -1382,6 +1382,15 @@ class ProviderManager:  # pylint: disable=too-many-public-methods
         self.custom_providers: Dict[str, Provider] = {}
         self.plugin_providers: Dict[str, Dict] = {}  # Plugin providers
         self.active_model: ModelSlotConfig | None = None
+        #: Priority-ordered list of default models used for failover. Empty
+        #: by default — the runtime then behaves exactly as before (single
+        #: active model). Non-empty: the chain replaces the active model and
+        #: the runtime fails over after a model's recent failure rate crosses
+        #: the retire threshold.
+        self.fallback_models: List[ModelSlotConfig] = []
+        #: Monotonic counter bumped on any provider/config mutation.  Used by
+        #: the model-factory failover-chain cache to detect stale chains.
+        self._config_revision = 0
         self.root_path = SECRET_DIR / "providers"
         self.builtin_path = self.root_path / "builtin"
         self.custom_path = self.root_path / "custom"
@@ -1653,6 +1662,7 @@ class ProviderManager:  # pylint: disable=too-many-public-methods
         # providers.json file and remove the provider from the UI.
         if provider_id in self.custom_providers:
             del self.custom_providers[provider_id]
+            self._config_revision += 1
             provider_path = self.custom_path / f"{provider_id}.json"
             if provider_path.exists():
                 os.remove(provider_path)
@@ -1929,6 +1939,9 @@ class ProviderManager:  # pylint: disable=too-many-public-methods
 
         Sensitive fields (``api_key``) are encrypted before writing.
         """
+        # Any persistence is a config change: bump the revision so cached
+        # failover chains are invalidated.
+        self._config_revision += 1
         provider_dir = self.builtin_path if is_builtin else self.custom_path
         provider_path = provider_dir / f"{provider.id}.json"
         if skip_if_exists and provider_path.exists():
@@ -1949,6 +1962,7 @@ class ProviderManager:  # pylint: disable=too-many-public-methods
 
         Sensitive fields (``api_key``) are encrypted before writing.
         """
+        self._config_revision += 1
         provider_path = self.plugin_path / f"{provider.id}.json"
         data = encrypt_dict_fields(
             provider.model_dump(),
@@ -2124,6 +2138,126 @@ class ProviderManager:  # pylint: disable=too-many-public-methods
                 return ModelSlotConfig.model_validate(data)
         except Exception:
             return None
+
+    # ------------------------------------------------------------------
+    # Priority-ordered default-model chain (failover)
+    # ------------------------------------------------------------------
+
+    def _fallback_path(self):
+        return self.root_path / "fallback_models.json"
+
+    def _load_fallback_models(self) -> List[ModelSlotConfig]:
+        """Load the priority-ordered default-model chain from disk."""
+        path = self._fallback_path()
+        if not path.exists():
+            return []
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, list):
+                return []
+            models: List[ModelSlotConfig] = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                try:
+                    slot = ModelSlotConfig.model_validate(item)
+                except Exception:
+                    continue
+                if slot.provider_id and slot.model:
+                    models.append(slot)
+            return models
+        except Exception as exc:
+            logger.warning("Failed to load fallback models: %s", exc)
+            return []
+
+    def _save_fallback_models(self) -> None:
+        """Persist the priority-ordered default-model chain to disk."""
+        path = self._fallback_path()
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(
+                [slot.model_dump() for slot in self.fallback_models],
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+
+    def get_fallback_models(self) -> List[ModelSlotConfig]:
+        """Return the priority-ordered default-model chain (copy).
+
+        Empty by default, meaning the failover feature is disabled and the
+        runtime keeps using the single active model.
+        """
+        return list(self.fallback_models)
+
+    def get_config_revision(self) -> int:
+        """Return the provider-config revision (bumped on every mutation).
+
+        The model-factory failover-chain cache keys on this value so that
+        changing a provider's key/URL/model config invalidates the cached
+        chain.
+        """
+        return self._config_revision
+
+    def set_fallback_models(self, models: List[ModelSlotConfig]) -> None:
+        """Replace the priority-ordered default-model chain and reset the
+        runtime failover position back to the first entry."""
+        normalized: List[ModelSlotConfig] = []
+        seen: set[tuple[str, str]] = set()
+        for slot in models:
+            if not isinstance(slot, ModelSlotConfig):
+                try:
+                    slot = ModelSlotConfig.model_validate(slot)
+                except Exception:
+                    continue
+            key = (slot.provider_id, slot.model)
+            if not slot.provider_id or not slot.model or key in seen:
+                continue
+            seen.add(key)
+            normalized.append(slot)
+        self.fallback_models = normalized
+        self._save_fallback_models()
+        # Start the failover chain over from the top.
+        from .fallback_chat_model import reset_fallback_state
+
+        reset_fallback_state()
+        logger.info(
+            "Updated fallback model chain (%d entries): %s",
+            len(normalized),
+            ", ".join(
+                f"{s.provider_id}/{s.model}" for s in normalized
+            ) or "(empty)",
+        )
+
+    def get_fallback_models_info(
+        self,
+    ) -> List[Dict[str, str]]:
+        """Return the chain enriched with display names for the UI."""
+        info: List[Dict[str, str]] = []
+        for slot in self.fallback_models:
+            provider = self.get_provider(slot.provider_id)
+            provider_name = provider.name if provider is not None else ""
+            model_name = slot.model
+            if provider is not None:
+                for model in list(provider.models) + list(
+                    provider.extra_models
+                ):
+                    if model.id == slot.model and model.name:
+                        model_name = model.name
+                        break
+            info.append(
+                {
+                    "provider_id": slot.provider_id,
+                    "model": slot.model,
+                    "provider_name": provider_name,
+                    "model_name": model_name,
+                }
+            )
+        return info
 
     def _migrate_copaw_config(self) -> None:
         """Migrate copaw-local provider config to qwenpaw-local."""
@@ -2352,6 +2486,9 @@ class ProviderManager:  # pylint: disable=too-many-public-methods
         active_model = self.load_active_model()
         if active_model:
             self.active_model = active_model
+
+        # Load the priority-ordered default-model chain (empty by default)
+        self.fallback_models = self._load_fallback_models()
 
         # Migrate copaw-local to qwenpaw-local for backwards compatibility
         self._migrate_copaw_config()

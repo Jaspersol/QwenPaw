@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import api from "../../../api";
-import type { ProviderInfo, ActiveModelsInfo } from "../../../api/types";
+import type {
+  ProviderInfo,
+  ActiveModelsInfo,
+  FallbackModelsInfo,
+} from "../../../api/types";
 import { useAgentStore } from "../../../stores/agentStore";
 
 export function useProviders() {
@@ -8,6 +12,8 @@ export function useProviders() {
   const [activeModels, setActiveModels] = useState<ActiveModelsInfo | null>(
     null,
   );
+  const [fallbackModels, setFallbackModels] =
+    useState<FallbackModelsInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { selectedAgent } = useAgentStore();
@@ -18,9 +24,12 @@ export function useProviders() {
     }
     setError(null);
     try {
-      const [provData, activeData] = await Promise.all([
+      const [provData, activeData, fallbackData] = await Promise.all([
         api.listProviders(),
         api.getActiveModels({ scope: "global" }),
+        // Failover chain info may be absent on older backends — never let
+        // it break the models page.
+        api.getFallbackModels().catch(() => null),
       ]);
       if (!Array.isArray(provData)) {
         throw new Error(
@@ -29,6 +38,7 @@ export function useProviders() {
       }
       setProviders(provData);
       if (activeData) setActiveModels(activeData);
+      if (fallbackData) setFallbackModels(fallbackData);
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : "Failed to load provider data";
@@ -51,6 +61,7 @@ export function useProviders() {
   return {
     providers,
     activeModels,
+    fallbackModels,
     loading,
     error,
     fetchAll,

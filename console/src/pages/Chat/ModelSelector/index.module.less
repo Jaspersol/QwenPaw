@@ -188,6 +188,34 @@
   padding: 4px 0;
 }
 
+/* ---- "Auto" badge on the trigger (failover chain active) ---- */
+.autoBadge {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 0 6px;
+  height: 16px;
+  border-radius: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  color: #4f46e5;
+  background: rgba(99, 102, 241, 0.12);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+}
+
+/* ---- Failover-chain hint inside the dropdown ---- */
+.fallbackDropdownHint {
+  margin: 0 12px 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #eef2ff;
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  color: #4f46e5;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 /* ---- Provider group ---- */
 .providerGroup {
   margin-bottom: 4px;

@@ -20,6 +20,8 @@ import type {
   DiscoverExtendedResponse,
   FilterModelsRequest,
   FilterModelsResponse,
+  FallbackModelsInfo,
+  FallbackModelsRequest,
 } from "../types";
 
 function buildActiveModelQuery(params?: GetActiveModelsRequest): string {
@@ -74,6 +76,17 @@ export const providerApi = {
     }).then((result) => {
       activeModelPromises.clear();
       return result;
+    }),
+
+  /* ---- Priority-ordered default-model chain (failover) ---- */
+
+  getFallbackModels: () =>
+    request<FallbackModelsInfo>("/models/fallback-models"),
+
+  setFallbackModels: (body: FallbackModelsRequest) =>
+    request<FallbackModelsInfo>("/models/fallback-models", {
+      method: "PUT",
+      body: JSON.stringify(body),
     }),
 
   /* ---- Custom provider CRUD ---- */

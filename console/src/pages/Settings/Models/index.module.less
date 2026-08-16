@@ -1115,6 +1115,139 @@
   border-top: 1px solid #f0f0f0;
 }
 
+/* ---- Fallback (priority default-model chain) ---- */
+
+.fallbackImportRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+/* Fallback chain pill (next to the default-LLM pill) */
+.fallbackPill {
+  border-color: rgba(99, 102, 241, 0.25);
+  background: linear-gradient(135deg, #eef2ff, #e0e7ff, #fff);
+
+  &:hover {
+    box-shadow: 0 2px 10px rgba(99, 102, 241, 0.2);
+  }
+}
+
+.fallbackPillIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.fallbackPillDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #6366f1;
+  flex-shrink: 0;
+}
+
+.fallbackPillValue {
+  font-size: 13px;
+  font-weight: 600;
+  color: #4f46e5;
+  white-space: nowrap;
+}
+
+.fallbackImportHint {
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.5;
+}
+
+.fallbackList {
+  margin-top: 14px;
+  border: 1px solid #f0f0f0;
+  border-radius: 10px;
+  overflow: hidden;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.fallbackItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #f5f5f5;
+  background: #fff;
+  transition: background 0.15s;
+
+  &:last-child {
+    border-bottom: none;
+  }
+
+  &:hover {
+    background: #fafafa;
+  }
+}
+
+.fallbackIndex {
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: rgba(99, 102, 241, 0.12);
+  color: #6366f1;
+  font-size: 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.fallbackItemInfo {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.fallbackItemName {
+  font-size: 13px;
+  font-weight: 500;
+  color: #1f2937;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fallbackItemSep {
+  color: #d1d5db;
+  margin: 0 6px;
+}
+
+.fallbackItemId {
+  font-size: 11px;
+  color: #9ca3af;
+  font-family: "SF Mono", "Menlo", monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fallbackCurrentTag {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(20, 184, 166, 1);
+  background: #ecfdf5;
+  border: 1px solid rgba(20, 184, 166, 0.35);
+  vertical-align: middle;
+}
+
 /* ---- Section Header Row (title + button) ---- */
 
 .sectionHeaderRow {
@@ -2707,6 +2840,47 @@
 
   .modelListCount {
     font-size: 11px;
+  }
+
+  /* ─── Fallback priority chain ─── */
+  .fallbackImportHint {
+    color: rgba(255, 255, 255, 0.4);
+  }
+
+  .fallbackList {
+    border-color: rgba(255, 255, 255, 0.08);
+  }
+
+  .fallbackItem {
+    background: rgba(255, 255, 255, 0.02);
+    border-bottom-color: rgba(255, 255, 255, 0.06);
+
+    &:hover {
+      background: rgba(255, 255, 255, 0.05);
+    }
+  }
+
+  .fallbackIndex {
+    background: rgba(99, 102, 241, 0.2);
+    color: #a5b4fc;
+  }
+
+  .fallbackItemName {
+    color: rgba(255, 255, 255, 0.85);
+  }
+
+  .fallbackItemSep {
+    color: rgba(255, 255, 255, 0.2);
+  }
+
+  .fallbackItemId {
+    color: rgba(255, 255, 255, 0.35);
+  }
+
+  .fallbackCurrentTag {
+    color: #6ee7b7;
+    background: rgba(20, 184, 166, 0.12);
+    border-color: rgba(20, 184, 166, 0.3);
   }
 
   .modelManageModal {

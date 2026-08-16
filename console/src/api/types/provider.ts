@@ -94,8 +94,28 @@ export interface ModelSlotConfig {
   model: string;
 }
 
+/** One entry in the priority-ordered default-model chain (failover). */
+export interface FallbackModelEntry extends ModelSlotConfig {
+  provider_name?: string;
+  model_name?: string;
+}
+
+/** Full fallback-chain state exposed by the backend. */
+export interface FallbackModelsInfo {
+  models: FallbackModelEntry[];
+  /** Slot the failover pointer currently selects. */
+  current?: ModelSlotConfig | null;
+}
+
+/** Request body for replacing the whole chain (order = priority). */
+export interface FallbackModelsRequest {
+  models: ModelSlotConfig[];
+}
+
 export interface ActiveModelsInfo {
   active_llm?: ModelSlotConfig;
+  /** Model actually used by the runtime after fallback-chain resolution. */
+  runtime_active_llm?: ModelSlotConfig | null;
   effective_max_input_length?: number | null;
 }
 

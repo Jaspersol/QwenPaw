@@ -15,6 +15,7 @@ import hashlib
 import logging
 import os
 import re
+import threading
 from typing import List, Sequence, Tuple, Type, Any, Union, Optional
 from urllib.parse import unquote, urlparse
 
@@ -1435,6 +1436,156 @@ def _resolved_provider_id(provider: Any, configured_provider_id: str) -> str:
     return str(getattr(provider, "id", "") or configured_provider_id)
 
 
+def _slot_in_chain(slot: Any, fallback_models: Sequence[Any]) -> bool:
+    """Return *True* when *slot* matches an entry in the failover chain."""
+    for entry in fallback_models:
+        if (
+            getattr(entry, "provider_id", "") == getattr(slot, "provider_id", "")
+            and getattr(entry, "model", "") == getattr(slot, "model", "")
+        ):
+            return True
+    return False
+
+
+def _build_fallback_chain(
+    manager: Any,
+    fallback_models: Sequence[Any],
+    *,
+    retry_config: Any,
+    rate_limit_config: Any,
+    compact_threshold: Optional[float],
+) -> Tuple[Optional[ChatModelBase], Optional[Any]]:
+    """Build the priority-ordered failover chain of wrapped chat models.
+
+    Each chain entry is resolved through its provider, bound to its own
+    formatter, and wrapped with token recording + retry logic — exactly like
+    the single-model path.  Entries whose provider/model cannot be resolved
+    are skipped with a warning so one bad entry cannot break the chain.
+
+    Returns ``(FallbackChatModel, current_formatter)``, or
+    ``(None, None)`` when no entry could be built.
+    """
+    from ..config.config import ModelSlotConfig
+    from ..providers.fallback_chat_model import FallbackChatModel
+
+    chain_models: List[ChatModelBase] = []
+    chain_slots: List[ModelSlotConfig] = []
+    for chain_slot in fallback_models:
+        if not isinstance(chain_slot, ModelSlotConfig):
+            try:
+                chain_slot = ModelSlotConfig.model_validate(chain_slot)
+            except Exception:
+                continue
+        provider = manager.get_provider(chain_slot.provider_id)
+        if provider is None:
+            logger.warning(
+                "Fallback model: provider '%s' not found; skipping.",
+                chain_slot.provider_id,
+            )
+            continue
+        try:
+            raw_model = provider.get_chat_model_instance(chain_slot.model)
+        except Exception as exc:
+            logger.warning(
+                "Fallback model: failed to create %s/%s: %s; skipping.",
+                chain_slot.provider_id,
+                chain_slot.model,
+                exc,
+            )
+            continue
+        provider_id = _resolved_provider_id(provider, chain_slot.provider_id)
+        provider_id = _bind_provider_id_to_model(raw_model, provider_id)
+        formatter = _create_formatter_instance(
+            raw_model,
+            provider_id=provider_id,
+        )
+        raw_model.formatter = formatter
+        if hasattr(raw_model, "max_retries"):
+            raw_model.max_retries = 0
+        wrapped: ChatModelBase = TokenRecordingModelWrapper(
+            provider_id,
+            raw_model,
+            compact_threshold=compact_threshold,
+        )
+        wrapped = RetryChatModel(
+            wrapped,
+            retry_config=retry_config,
+            rate_limit_config=rate_limit_config,
+        )
+        chain_models.append(wrapped)
+        chain_slots.append(chain_slot)
+
+    if not chain_models:
+        return None, None
+    chain_model = FallbackChatModel(chain_models, chain_slots)
+    return chain_model, chain_model.formatter
+
+
+#: Cache of built failover chains, keyed by (slot-fingerprint, config
+#: revision).  Building a chain is expensive (N model instances + formatters
+#: + wrappers) and was previously done on *every* request; the inner wrappers
+#: (TokenRecordingModelWrapper / RetryChatModel) are stateless per call, so a
+#: cached chain is safe to share across concurrent requests.
+_fallback_chain_cache: dict[tuple, Any] = {}
+_fallback_chain_cache_lock = threading.Lock()
+_FALLBACK_CHAIN_CACHE_MAX = 16
+
+
+def _get_or_build_fallback_chain(
+    manager: Any,
+    fallback_models: Sequence[Any],
+    *,
+    retry_config: Any,
+    rate_limit_config: Any,
+    compact_threshold: Optional[float],
+) -> Tuple[Optional[ChatModelBase], Optional[Any]]:
+    """Return the built failover chain, reusing a cached one when possible.
+
+    The cache is keyed on the chain's slot identities, the provider manager's
+    config revision, and the per-agent retry/rate-limit/compaction settings —
+    so editing any provider (key/URL/model config) *or* building the chain for
+    an agent with different LLM settings transparently invalidates it.
+    """
+    fingerprint = tuple(
+        (getattr(slot, "provider_id", ""), getattr(slot, "model", ""))
+        for slot in fallback_models
+    )
+    revision = getattr(manager, "get_config_revision", lambda: 0)()
+    # ``retry_config`` / ``rate_limit_config`` are per-agent (frozen,
+    # value-hashable dataclasses) and ``compact_threshold`` is per-agent too;
+    # they must be part of the key, otherwise the first agent to build the
+    # chain would leak its settings to every other agent.
+    key = (
+        fingerprint,
+        revision,
+        retry_config,
+        rate_limit_config,
+        compact_threshold,
+    )
+
+    with _fallback_chain_cache_lock:
+        cached = _fallback_chain_cache.get(key)
+    if cached is not None:
+        chain_model, _ = cached
+        return chain_model, chain_model.formatter
+
+    chain_model, chain_formatter = _build_fallback_chain(
+        manager,
+        fallback_models,
+        retry_config=retry_config,
+        rate_limit_config=rate_limit_config,
+        compact_threshold=compact_threshold,
+    )
+    if chain_model is not None:
+        with _fallback_chain_cache_lock:
+            _fallback_chain_cache[key] = (chain_model, chain_formatter)
+            # Bound the cache so a long-running process with many config
+            # edits cannot grow it without limit.
+            while len(_fallback_chain_cache) > _FALLBACK_CHAIN_CACHE_MAX:
+                _fallback_chain_cache.pop(next(iter(_fallback_chain_cache)))
+    return chain_model, chain_formatter
+
+
 def create_model_and_formatter(
     agent_id: Optional[str] = None,
     model_slot_override: Any = None,
@@ -1501,13 +1652,48 @@ def create_model_and_formatter(
             pass
 
     slot = _resolve_model_slot_override(model_slot_override)
-    if slot is not None and slot.provider_id and slot.model:
+    override_explicit = slot is not None and slot.provider_id and slot.model
+    if override_explicit:
         model_slot = slot
+
+    manager = ProviderManager.get_instance()
+
+    # Priority-ordered default-model chain (global failover).  When the user
+    # configured one and no explicit per-request override was supplied, the
+    # chain *is* the default model config: it replaces the single active
+    # model, starts at entry 0, and fails over after a slot's recent failure
+    # rate crosses the retire threshold.  An explicit per-request override
+    # always wins over the chain.
+    fallback_models = manager.get_fallback_models()
+    if fallback_models and not override_explicit:
+        # A per-agent active_model that is NOT part of the chain is an
+        # explicit in-session switch: use it directly (no chain failover).
+        # The switch endpoint already reset the chain pointer to 0 for this
+        # case, so the next in-chain switch starts from the list head.
+        manual_override = (
+            model_slot is not None
+            and model_slot.provider_id
+            and model_slot.model
+            and not _slot_in_chain(model_slot, fallback_models)
+        )
+        if not manual_override:
+            chain_model, chain_formatter = _get_or_build_fallback_chain(
+                manager,
+                fallback_models,
+                retry_config=retry_config,
+                rate_limit_config=rate_limit_config,
+                compact_threshold=compact_threshold,
+            )
+            if chain_model is not None:
+                return chain_model, chain_formatter
+            logger.warning(
+                "Fallback model chain configured but none of its entries "
+                "could be built; falling back to the single active model.",
+            )
 
     # Create chat model from agent-specific or global config
     if model_slot and model_slot.provider_id and model_slot.model:
         # Use agent-specific model
-        manager = ProviderManager.get_instance()
         provider = manager.get_provider(model_slot.provider_id)
         if provider is None:
             raise ProviderError(
@@ -1519,7 +1705,7 @@ def create_model_and_formatter(
     else:
         # Fallback to global active model
         model = ProviderManager.get_active_chat_model()
-        global_model = ProviderManager.get_instance().get_active_model()
+        global_model = manager.get_active_model()
         if not global_model:
             raise ProviderError(
                 message=(
@@ -1529,9 +1715,7 @@ def create_model_and_formatter(
                 ),
             )
         provider_id = _resolved_provider_id(
-            ProviderManager.get_instance().get_provider(
-                global_model.provider_id,
-            ),
+            manager.get_provider(global_model.provider_id),
             global_model.provider_id,
         )
 

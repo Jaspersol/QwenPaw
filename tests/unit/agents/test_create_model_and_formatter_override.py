@@ -74,6 +74,7 @@ def _patch_dependencies(monkeypatch):
                 ),
                 get_active_chat_model=lambda: None,
                 get_active_model=lambda: None,
+                get_fallback_models=lambda: [],
             ),
         ),
     )
@@ -136,6 +137,7 @@ def test_factory_uses_resolved_provider_id(
             id="canonical-provider",
             get_chat_model_instance=lambda _model_name: canonical_model,
         ),
+        get_fallback_models=lambda: [],
     )
     monkeypatch.setattr(
         model_factory,
@@ -231,3 +233,53 @@ def test_no_override_uses_active_model():
         )
 
     assert model.identifier == "default-provider/default-model"
+
+
+def test_non_chain_active_model_bypasses_chain(monkeypatch):
+    """A non-empty fallback chain does not hide a per-agent active_model
+    that is *not* part of the chain: the agent's model is used directly."""
+    chain = [ModelSlotConfig(provider_id="chain-p", model="chain-m")]
+    manager = SimpleNamespace(
+        get_provider=lambda provider_id: SimpleNamespace(
+            id=provider_id,
+            get_chat_model_instance=lambda model_name: _FakeChatModel(
+                f"{provider_id}/{model_name}",
+            ),
+        ),
+        get_active_chat_model=lambda: None,
+        get_active_model=lambda: None,
+        get_fallback_models=lambda: chain,
+    )
+    monkeypatch.setattr(
+        model_factory,
+        "ProviderManager",
+        SimpleNamespace(get_instance=lambda: manager),
+    )
+
+    with patch.object(model_factory, "RetryConfig") as retry_cls:
+        retry_cls.return_value = "rc"
+        model, _ = model_factory.create_model_and_formatter(agent_id="agent-1")
+
+    # default-provider/default-model is NOT in the chain -> used directly.
+    assert model.identifier == "default-provider/default-model"
+
+
+def test_slot_in_chain_helper():
+    """_slot_in_chain matches by provider_id + model."""
+    chain = [
+        ModelSlotConfig(provider_id="p", model="m"),
+        ModelSlotConfig(provider_id="q", model="n"),
+    ]
+    assert model_factory._slot_in_chain(
+        ModelSlotConfig(provider_id="p", model="m"),
+        chain,
+    )
+    assert model_factory._slot_in_chain(
+        ModelSlotConfig(provider_id="q", model="n"),
+        chain,
+    )
+    assert not model_factory._slot_in_chain(
+        ModelSlotConfig(provider_id="p", model="other"),
+        chain,
+    )
+    assert not model_factory._slot_in_chain(None, chain)

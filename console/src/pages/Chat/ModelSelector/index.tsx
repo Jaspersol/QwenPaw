@@ -13,7 +13,11 @@ import { AlertTriangle, Link as LinkIcon, Settings } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { providerApi } from "../../../api/modules/provider";
-import type { ProviderInfo, ActiveModelsInfo } from "../../../api/types";
+import type {
+  ProviderInfo,
+  ActiveModelsInfo,
+  FallbackModelsInfo,
+} from "../../../api/types";
 import { useAgentStore } from "../../../stores/agentStore";
 import { confirmFreeModelSwitch } from "@/utils/freeModelSwitchWarning";
 import { ProviderIcon } from "../../Settings/Models/components/ProviderIconComponent";
@@ -59,6 +63,11 @@ export default function ModelSelector() {
   const [activeModels, setActiveModels] = useState<ActiveModelsInfo | null>(
     null,
   );
+  // Priority-ordered default-model chain (failover).  When non-empty and the
+  // agent has not explicitly switched to a model outside the chain, the
+  // runtime uses ``current`` (the failover pointer slot) rather than the
+  // persisted active_llm — so the top-right display must reflect it.
+  const [fallback, setFallback] = useState<FallbackModelsInfo | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(false);
@@ -121,23 +130,57 @@ export default function ModelSelector() {
   const fetchData = useCallback(async () => {
     setLoading(true);
     try {
-      const [provData, activeData] = await Promise.all([
+      const [provData, activeData, fallbackData] = await Promise.all([
         providerApi.listProviders(),
         providerApi.getActiveModels({
           scope: "effective",
           agent_id: selectedAgent,
         }),
+        // Failover chain info may be absent on older backends — never let
+        // it break the selector.
+        providerApi.getFallbackModels().catch(() => null),
       ]);
       if (Array.isArray(provData)) setProviders(provData);
       if (activeData) {
         setActiveModels(activeData);
         publishActiveMaxInputLength(activeData.effective_max_input_length);
       }
+      if (fallbackData) setFallback(fallbackData);
     } catch (err) {
       console.error("ModelSelector: failed to load data", err);
     } finally {
       setLoading(false);
     }
+  }, [selectedAgent]);
+
+  // Refresh the runtime model pointer after each turn settles (automatic
+  // failover may have switched models mid-turn) and after any manual
+  // model-switch event.
+  useEffect(() => {
+    const refreshFallback = () => {
+      providerApi
+        .getFallbackModels()
+        .then((data) => setFallback(data))
+        .catch(() => {});
+    };
+    const onManualSwitch = () => {
+      providerApi
+        .getActiveModels({
+          scope: "effective",
+          agent_id: selectedAgent,
+        })
+        .then((activeData) => {
+          if (activeData) setActiveModels(activeData);
+        })
+        .catch(() => {});
+      refreshFallback();
+    };
+    window.addEventListener("chat-turn-settled", refreshFallback);
+    window.addEventListener("model-switched", onManualSwitch);
+    return () => {
+      window.removeEventListener("chat-turn-settled", refreshFallback);
+      window.removeEventListener("model-switched", onManualSwitch);
+    };
   }, [selectedAgent]);
 
   useEffect(() => {
@@ -253,8 +296,40 @@ export default function ModelSelector() {
     }
   }, [open]);
 
-  const activeProviderId = activeModels?.active_llm?.provider_id;
-  const activeModelId = activeModels?.active_llm?.model;
+  // When the priority-ordered default-model chain is configured, the
+  // runtime normally uses the failover pointer slot (``fallback.current``)
+  // rather than the persisted active_llm.  The backend reports the slot the
+  // runtime actually resolved to in ``runtime_active_llm``.  That field is
+  // refreshed less often than the pointer, so prefer it only when it is an
+  // explicit in-session model outside the chain; while the chain is running,
+  // follow the pointer so mid-turn failover updates display immediately.
+  const fallbackConfigured = !!fallback && fallback.models.length > 0;
+  const runtimeSlot = activeModels?.runtime_active_llm;
+  const runtimeSlotValid = !!runtimeSlot?.provider_id && !!runtimeSlot?.model;
+  const runtimeSlotInChain =
+    fallbackConfigured &&
+    runtimeSlotValid &&
+    fallback!.models.some(
+      (slot) =>
+        slot.provider_id === runtimeSlot.provider_id &&
+        slot.model === runtimeSlot.model,
+    );
+  const displaySlot =
+    fallbackConfigured && runtimeSlotValid && !runtimeSlotInChain
+      ? runtimeSlot
+      : fallbackConfigured && fallback.current
+      ? fallback.current
+      : runtimeSlot ?? activeModels?.active_llm;
+  const displayInFallbackChain =
+    fallbackConfigured &&
+    !!displaySlot &&
+    fallback!.models.some(
+      (slot) =>
+        slot.provider_id === displaySlot.provider_id &&
+        slot.model === displaySlot.model,
+    );
+  const activeProviderId = displaySlot?.provider_id;
+  const activeModelId = displaySlot?.model;
 
   // Display label for trigger button
   const activeModelName = (() => {
@@ -373,6 +448,12 @@ export default function ModelSelector() {
             },
       );
       publishActiveMaxInputLength(updated?.effective_max_input_length);
+      // Reflect the switch in the failover chain (the pointer may have
+      // moved to the switched model, or reset to the list head).
+      providerApi
+        .getFallbackModels()
+        .then(setFallback)
+        .catch(() => {});
     } catch (err) {
       const msg =
         err instanceof Error ? err.message : t("modelSelector.switchFailed");
@@ -408,6 +489,10 @@ export default function ModelSelector() {
               },
         );
         publishActiveMaxInputLength(updated?.effective_max_input_length);
+        providerApi
+          .getFallbackModels()
+          .then(setFallback)
+          .catch(() => {});
       } catch (err) {
         const msg =
           err instanceof Error ? err.message : t("modelSelector.switchFailed");
@@ -697,6 +782,11 @@ export default function ModelSelector() {
 
   const dropdownContent = (
     <div className={styles.panel}>
+      {fallbackConfigured && (
+        <div className={styles.fallbackDropdownHint}>
+          {t("modelSelector.fallbackHint")}
+        </div>
+      )}
       <div className={styles.searchWrapper}>
         <SearchOutlined className={styles.searchIcon} />
         <input
@@ -781,6 +871,11 @@ export default function ModelSelector() {
                 activeModelName
               )}
             </span>
+            {displayInFallbackChain && (
+              <span className={styles.autoBadge}>
+                {t("modelSelector.autoBadge")}
+              </span>
+            )}
             {/* Hidden span used to measure intrinsic text width. Placed
                 outside .triggerName so it does not duplicate text for
                 screen readers or testing-library queries. */}
