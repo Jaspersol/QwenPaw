@@ -500,6 +500,49 @@ async def put_channel(
         # For custom channels, just use the dict
         channel_config = single_channel_config
 
+    # Wake-word changes are validated before persisting so a typo in the
+    # keyword value cannot silently leave the channel unable to start.
+    if (
+        channel_name in {"local_voice", "sip"}
+        and getattr(channel_config, "wake_word_enabled", False)
+    ):
+        # API STT providers ignore the local KWS gate, so their keyword
+        # value does not need sherpa-onnx token validation.
+        from ..channels.sip.stt_engine import (
+            normalize_stt_provider,
+            validate_kws_keywords_value,
+        )
+
+        try:
+            uses_local_kws = (
+                normalize_stt_provider(
+                    getattr(channel_config, "stt_provider", "") or "",
+                )
+                == "sherpa_zipformer"
+            )
+        except ValueError:
+            uses_local_kws = True
+        old_channel_config = getattr(
+            agent.config.channels,
+            channel_name,
+            None,
+        )
+        old_value = (
+            getattr(old_channel_config, "kws_keywords_file", "") or ""
+        )
+        new_value = getattr(channel_config, "kws_keywords_file", "") or ""
+        if (
+            uses_local_kws
+            and old_value.strip() != new_value.strip()
+        ):
+            try:
+                validate_kws_keywords_value(new_value)
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=400,
+                    detail=str(exc),
+                ) from exc
+
     # Set channel config in agent's config
     setattr(agent.config.channels, channel_name, channel_config)
     save_agent_config(agent.agent_id, agent.config)

@@ -76,6 +76,9 @@ class WorkspaceBootstrapFactory:
             from ...hooks.request_setup.contextvars_hook import (
                 ContextVarsSetupHook,
             )
+            from ...hooks.request_setup.local_voice_context import (
+                LocalVoiceContextHook,
+            )
             from ...hooks.request_setup.media_hook import MediaProcessHook
             from ...hooks.session.session_hook import (
                 SessionLoadHook,
@@ -102,6 +105,7 @@ class WorkspaceBootstrapFactory:
                 ContextVarsSetupHook,
                 AgentContextVarsSetupHook,
                 MediaProcessHook,
+                LocalVoiceContextHook,
                 ErrorNormalizeHook,
                 CancelCleanupHook,
                 CheckpointQueryGateHook,

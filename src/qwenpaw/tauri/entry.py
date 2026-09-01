@@ -302,7 +302,9 @@ def _run_backend_server(log_level: str) -> None:
         log_init_timings()
 
     logging.getLogger("uvicorn.access").addFilter(
-        SuppressPathAccessLogFilter(["/console/push-messages"]),
+        SuppressPathAccessLogFilter(
+            ["/console/push-messages", "/console/inbox/events", "/assets/"],
+        ),
     )
 
     # Reuse the previous port so localStorage origin stays stable across

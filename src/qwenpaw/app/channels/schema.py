@@ -39,6 +39,7 @@ BUILTIN_CHANNEL_TYPES = (
     "console",
     "voice",
     "sip",
+    "local_voice",
     "slack",
     "xiaoyi",
     "yuanbao",

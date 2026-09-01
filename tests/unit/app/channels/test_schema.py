@@ -79,6 +79,7 @@ class TestChannelSchemaConstants:
             "console",
             "voice",
             "sip",
+            "local_voice",
             "slack",
             "xiaoyi",
             "yuanbao",

@@ -447,9 +447,86 @@ class SIPChannelConfig(BaseChannelConfig):
     rtp_port_low: int = 10000
     rtp_port_high: int = 20000
     dashscope_api_key: str = ""
-    tts_provider: str = "aliyun"
+    # OpenAI-compatible speech API (stt_provider/tts_provider == 'openai').
+    asr_api_base_url: str = ""
+    asr_api_key: str = ""
+    asr_model: str = "whisper-1"
+    tts_api_base_url: str = ""
+    tts_api_key: str = ""
+    tts_model: str = "tts-1"
+    # Qwen3-TTS 0.6B provider (qwen3). API mode uses DashScope
+    # qwen3-tts-flash; local mode uses the qwen_tts package.
+    qwen3_backend: Literal["api", "local"] = "api"
+    qwen3_model: str = "qwen3-tts-flash"
+    qwen3_model_dir: str = ""
+    qwen3_ref_audio: str = ""
+    qwen3_ref_text: str = ""
+    qwen3_device: str = "cpu"
+    tts_provider: str = Field(
+        default="aliyun",
+        description=(
+            "TTS provider for the SIP channel: 'aliyun' (DashScope "
+            "CosyVoice), 'edge_tts' (Microsoft Edge online), 'kokoro' "
+            "(local sherpa-onnx Kokoro), or 'openai' (OpenAI-compatible "
+            "/v1/audio/speech API)."
+        ),
+    )
     tts_voice: str = ""
-    stt_provider: str = "aliyun"
+    # Global speech rate multiplier (see LocalVoiceChannelConfig).
+    tts_speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    # Kokoro (local sherpa-onnx TTS) settings. Empty model dir falls back
+    # to KOKORO_MODEL_DIR, then the selected v1.1 model under MODELS_DIR.
+    kokoro_model_dir: str = ""
+    kokoro_model_variant: Literal["float32", "int8"] = "float32"
+    kokoro_num_threads: int = Field(default=2, ge=1, le=16)
+    kokoro_silence_scale: float = Field(default=0.2, ge=0.0, le=3.0)
+    # When true the local Kokoro model is cached process-wide; when false
+    # it is loaded per request and released afterwards.
+    tts_keep_model_loaded: bool = True
+    # Local streaming Zipformer ASR (sherpa-onnx) settings.
+    stt_provider: str = Field(
+        default="aliyun",
+        description=(
+            "STT provider for the SIP channel: 'aliyun' (DashScope "
+            "Paraformer), 'sherpa_zipformer' (local streaming Zipformer "
+            "with optional KWS wake word), or 'openai' (OpenAI-compatible "
+            "/v1/audio/transcriptions API)."
+        ),
+    )
+    zipformer_model_dir: str = ""
+    zipformer_num_threads: int = Field(default=2, ge=1, le=16)
+    # When true the local Zipformer/KWS models are cached process-wide and
+    # reused after channel restarts; when false they are released on stop.
+    asr_keep_model_loaded: bool = True
+    asr_rule1_min_trailing_silence: float = Field(
+        default=0.8,
+        ge=0.1,
+        le=5.0,
+    )
+    asr_rule2_min_trailing_silence: float = Field(
+        default=0.4,
+        ge=0.1,
+        le=5.0,
+    )
+    asr_rule3_min_utterance_length: float = Field(
+        default=15.0,
+        ge=1.0,
+        le=60.0,
+    )
+    # KWS wake-word gate. Empty kws_model_dir falls back to
+    # KWS_MODEL_DIR, then MODELS_DIR/<kws mobile model>.
+    wake_word_enabled: bool = False
+    kws_model_dir: str = ""
+    kws_keywords_file: str = ""
+    kws_num_threads: int = Field(default=1, ge=1, le=8)
+    kws_pre_roll_seconds: float = Field(default=0.5, ge=0.0, le=3.0)
+    kws_score: float = Field(default=1.5, ge=0.0, le=10.0)
+    kws_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
+    wake_active_timeout_seconds: float = Field(
+        default=60.0,
+        ge=5.0,
+        le=600.0,
+    )
     language: str = "zh-CN"
     welcome_greeting: str = "你好，我是QwenPaw"
     call_timeout: float = 120.0
@@ -460,6 +537,113 @@ class SIPChannelConfig(BaseChannelConfig):
     livekit_room_name: str = "sip-inbound"
     livekit_output_sample_rate: int = 24000
     max_concurrent_calls: int = 5
+
+
+class LocalVoiceChannelConfig(BaseChannelConfig):
+    """Local voice channel: laptop mic -> KWS/ASR -> TTS -> speakers.
+
+    Runs entirely inside the QwenPaw process with ``sounddevice``, so no
+    SIP softphone or browser is required. TTS audio is played directly on
+    the configured output device as soon as the channel is enabled.
+    """
+
+    input_device: Optional[int] = None
+    output_device: Optional[int] = None
+    input_sample_rate: int = 16000
+    tts_sample_rate: int = 24000
+    block_duration_ms: int = Field(default=20, ge=10, le=100)
+    welcome_greeting: str = "本地语音助手已启动"
+    # Maximum conversation turns kept in memory for the active voice segment.
+    # Older turns are truncated so a very long local_voice session does not
+    # keep the full transcript in RAM. The summary/context only needs recent
+    # turns anyway.
+    segment_max_turns: int = Field(default=50, ge=1, le=1000)
+
+    dashscope_api_key: str = ""
+    # OpenAI-compatible speech API (stt_provider/tts_provider == 'openai').
+    asr_api_base_url: str = ""
+    asr_api_key: str = ""
+    asr_model: str = "whisper-1"
+    tts_api_base_url: str = ""
+    tts_api_key: str = ""
+    tts_model: str = "tts-1"
+    # Qwen3-TTS 0.6B provider (qwen3). API mode uses DashScope
+    # qwen3-tts-flash; local mode uses the qwen_tts package.
+    qwen3_backend: Literal["api", "local"] = "api"
+    qwen3_model: str = "qwen3-tts-flash"
+    qwen3_model_dir: str = ""
+    qwen3_ref_audio: str = ""
+    qwen3_ref_text: str = ""
+    qwen3_device: str = "cpu"
+    stt_provider: str = "sherpa_zipformer"
+    zipformer_model_dir: str = ""
+    zipformer_num_threads: int = Field(default=2, ge=1, le=16)
+    # When true the local Zipformer/KWS models are cached process-wide and
+    # reused after channel restarts; when false they are released on stop.
+    asr_keep_model_loaded: bool = True
+    asr_rule1_min_trailing_silence: float = Field(
+        default=0.8,
+        ge=0.1,
+        le=5.0,
+    )
+    asr_rule2_min_trailing_silence: float = Field(
+        default=0.4,
+        ge=0.1,
+        le=5.0,
+    )
+    asr_rule3_min_utterance_length: float = Field(
+        default=15.0,
+        ge=1.0,
+        le=60.0,
+    )
+    wake_word_enabled: bool = True
+    kws_model_dir: str = ""
+    kws_keywords_file: str = ""
+    kws_num_threads: int = Field(default=1, ge=1, le=8)
+    kws_pre_roll_seconds: float = Field(default=0.5, ge=0.0, le=3.0)
+    # KWS keyword-spotting sensitivity. Higher score/threshold = fewer false
+    # wake-ups but more missed ones. Tune per environment.
+    kws_score: float = Field(default=1.5, ge=0.0, le=10.0)
+    kws_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
+    # How long the wake session stays active (no wake word required) after
+    # the most recent user/assistant interaction.
+    wake_active_timeout_seconds: float = Field(
+        default=60.0,
+        ge=5.0,
+        le=600.0,
+    )
+    language: str = "zh-CN"
+
+    tts_provider: str = "kokoro"
+    tts_voice: str = "zf_001"
+    # Global speech rate multiplier. 1.0 = natural speed; lower is slower
+    # and clearer. Supported by kokoro (native speed), openai (speed 0.25-4.0),
+    # and edge_tts (rate). Providers without native support ignore it.
+    tts_speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    # Pitch/silence tuning for the local Kokoro backend.
+    kokoro_model_dir: str = ""
+    kokoro_model_variant: Literal["float32", "int8"] = "float32"
+    kokoro_num_threads: int = Field(default=2, ge=1, le=16)
+    kokoro_silence_scale: float = Field(default=0.2, ge=0.0, le=3.0)
+    # When true the local Kokoro model is cached process-wide; when false
+    # it is loaded per request and released afterwards.
+    tts_keep_model_loaded: bool = True
+    # Optional pip index overrides for Local Voice dependency installation.
+    # Leave empty to use the defaults (PyPI / download.pytorch.org).
+    pip_index_url: str = Field(
+        default="",
+        description=(
+            "Custom pip index URL for normal Python dependencies, e.g. "
+            "https://pypi.tuna.tsinghua.edu.cn/simple"
+        ),
+    )
+    torch_index_url: str = Field(
+        default="",
+        description=(
+            "Custom PyTorch wheel index for torch/torchaudio CUDA installs, "
+            "e.g. https://mirrors.aliyun.com/pytorch-wheels/cu128/"
+        ),
+    )
 
 
 class XiaoYiConfig(BaseChannelConfig):
@@ -559,6 +743,7 @@ class ChannelConfig(BaseModel):
     matrix: MatrixConfig = MatrixConfig()
     voice: VoiceChannelConfig = VoiceChannelConfig()
     sip: SIPChannelConfig = SIPChannelConfig()
+    local_voice: LocalVoiceChannelConfig = LocalVoiceChannelConfig()
     wecom: WecomConfig = WecomConfig()
     xiaoyi: XiaoYiConfig = XiaoYiConfig()
     yuanbao: YuanbaoConfig = YuanbaoConfig()
@@ -2721,6 +2906,7 @@ ChannelConfigUnion = Union[
     MatrixConfig,
     VoiceChannelConfig,
     SIPChannelConfig,
+    LocalVoiceChannelConfig,
     SlackConfig,
     WecomConfig,
     XiaoYiConfig,

@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import os
 import re
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from urllib.parse import urlparse
 from urllib.request import url2pathname
+
+from qwenpaw.schemas import ContentType, MessageType, RunStatus
 
 _FENCE_RE = re.compile(r"^(`{3,}|~{3,})")
 
@@ -130,7 +132,7 @@ class _SplitBuffer:
     def _hard_split_long_line(self, line: str) -> None:
         """Split an oversize single line at ``max_len`` boundaries."""
         for k in range(0, len(line), self.max_len):
-            self.chunks.append(line[k : k + self.max_len])
+            self.chunks.append(line[k:k + self.max_len])
 
     def emit_line(self, line: str) -> None:
         """Append a source line, hard-splitting if it exceeds ``max_len``."""
@@ -256,3 +258,50 @@ def file_url_to_local_path(url: str) -> Optional[str]:
     ):
         return s
     return None
+
+
+def _enum_value(value: Any) -> Any:
+    """Return the underlying value for str-Enum members."""
+    if hasattr(value, "value"):
+        return value.value
+    return value
+
+
+def is_final_voice_message(event: Any) -> bool:
+    """Return true for completed assistant text messages only.
+
+    Reasoning envelopes and tool-call/output envelopes also use
+    ``object == "message"``, so voice channels must additionally check the
+    message type before extracting TTS text.
+    """
+    if getattr(event, "object", None) != "message":
+        return False
+    status = _enum_value(getattr(event, "status", None))
+    if status != RunStatus.Completed.value:
+        return False
+    msg_type = _enum_value(getattr(event, "type", None))
+    # A missing type only happens on legacy non-envelope paths; current
+    # runtime events always carry MessageType and reasoning/tool envelopes
+    # are rejected here.
+    return msg_type in (None, MessageType.MESSAGE.value)
+
+
+def extract_voice_message_text(event: Any) -> str:
+    """Extract only speakable text from a final assistant message.
+
+    Tool calls and outputs are ``DataContent`` blocks and reasoning messages
+    are filtered out before this helper is called; this function also guards
+    against mixed content by only accepting text/refusal parts.
+    """
+    parts = []
+    for part in getattr(event, "content", None) or []:
+        part_type = _enum_value(getattr(part, "type", None))
+        if part_type == ContentType.TEXT.value:
+            text = getattr(part, "text", "") or ""
+        elif part_type == ContentType.REFUSAL.value:
+            text = getattr(part, "refusal", "") or ""
+        else:
+            continue
+        if text:
+            parts.append(text)
+    return " ".join(part for part in parts if part)

@@ -27,6 +27,7 @@ from ..base import BaseChannel, OnReplySent, ProcessHandler
 from .backend import SipBackend
 from .session import SIPCallSessionManager
 from .stt_tts import create_stt_engine, synthesize_tts, synthesize_tts_stream
+from ..utils import extract_voice_message_text, is_final_voice_message
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +234,21 @@ class SIPChannel(BaseChannel):
                 cfg.tts_voice,
                 cfg.dashscope_api_key,
                 sample_rate=sr,
+                speed=getattr(cfg, "tts_speed", 1.0),
+                kokoro_model_dir=cfg.kokoro_model_dir,
+                kokoro_model_variant=cfg.kokoro_model_variant,
+                kokoro_num_threads=cfg.kokoro_num_threads,
+                kokoro_silence_scale=getattr(cfg, "kokoro_silence_scale", 0.2),
+                openai_api_key=cfg.tts_api_key,
+                openai_base_url=cfg.tts_api_base_url,
+                openai_model=cfg.tts_model,
+                qwen3_backend=cfg.qwen3_backend,
+                qwen3_model=cfg.qwen3_model,
+                qwen3_model_dir=cfg.qwen3_model_dir,
+                qwen3_ref_audio=cfg.qwen3_ref_audio,
+                qwen3_ref_text=cfg.qwen3_ref_text,
+                qwen3_device=cfg.qwen3_device,
+                keep_model_loaded=cfg.tts_keep_model_loaded,
             ):
                 if abort.is_set():
                     break
@@ -313,6 +329,33 @@ class SIPChannel(BaseChannel):
             cfg.stt_provider,
             cfg.language,
             cfg.dashscope_api_key,
+            zipformer_model_dir=cfg.zipformer_model_dir,
+            zipformer_num_threads=cfg.zipformer_num_threads,
+            wake_word_enabled=cfg.wake_word_enabled,
+            kws_model_dir=cfg.kws_model_dir,
+            kws_keywords_file=cfg.kws_keywords_file,
+            kws_num_threads=cfg.kws_num_threads,
+            kws_pre_roll_seconds=cfg.kws_pre_roll_seconds,
+            kws_score=getattr(cfg, "kws_score", 1.5),
+            kws_threshold=getattr(cfg, "kws_threshold", 0.25),
+            wake_active_timeout_seconds=getattr(
+                cfg,
+                "wake_active_timeout_seconds",
+                60.0,
+            ),
+            asr_rule1_min_trailing_silence=(
+                cfg.asr_rule1_min_trailing_silence
+            ),
+            asr_rule2_min_trailing_silence=(
+                cfg.asr_rule2_min_trailing_silence
+            ),
+            asr_rule3_min_utterance_length=(
+                cfg.asr_rule3_min_utterance_length
+            ),
+            openai_api_key=cfg.asr_api_key,
+            openai_base_url=cfg.asr_api_base_url,
+            openai_model=cfg.asr_model,
+            keep_model_loaded=cfg.asr_keep_model_loaded,
         )
 
         session = self.session_mgr.create_session(
@@ -326,6 +369,10 @@ class SIPChannel(BaseChannel):
 
         stt_engine.on_transcript = lambda t: self._on_transcript(call_id, t)
         stt_engine.on_speech_start = lambda: self._on_speech_start(call_id)
+        stt_engine.on_wake_word = lambda keyword: self._on_wake_word(
+            call_id,
+            keyword,
+        )
 
         try:
             await stt_engine.start()
@@ -347,6 +394,19 @@ class SIPChannel(BaseChannel):
                     cfg.tts_voice,
                     cfg.dashscope_api_key,
                     sample_rate=sr,
+                    kokoro_model_dir=cfg.kokoro_model_dir,
+                    kokoro_model_variant=cfg.kokoro_model_variant,
+                    kokoro_num_threads=cfg.kokoro_num_threads,
+                    openai_api_key=cfg.tts_api_key,
+                    openai_base_url=cfg.tts_api_base_url,
+                    openai_model=cfg.tts_model,
+                    qwen3_backend=cfg.qwen3_backend,
+                    qwen3_model=cfg.qwen3_model,
+                    qwen3_model_dir=cfg.qwen3_model_dir,
+                    qwen3_ref_audio=cfg.qwen3_ref_audio,
+                    qwen3_ref_text=cfg.qwen3_ref_text,
+                    qwen3_device=cfg.qwen3_device,
+                    keep_model_loaded=cfg.tts_keep_model_loaded,
                 ):
                     if is_dev:
                         chunk = _pcm16_to_pyvoip(chunk)
@@ -412,6 +472,21 @@ class SIPChannel(BaseChannel):
                 cfg.tts_voice,
                 cfg.dashscope_api_key,
                 sample_rate=sr,
+                speed=getattr(cfg, "tts_speed", 1.0),
+                kokoro_model_dir=cfg.kokoro_model_dir,
+                kokoro_model_variant=cfg.kokoro_model_variant,
+                kokoro_num_threads=cfg.kokoro_num_threads,
+                kokoro_silence_scale=getattr(cfg, "kokoro_silence_scale", 0.2),
+                openai_api_key=cfg.tts_api_key,
+                openai_base_url=cfg.tts_api_base_url,
+                openai_model=cfg.tts_model,
+                qwen3_backend=cfg.qwen3_backend,
+                qwen3_model=cfg.qwen3_model,
+                qwen3_model_dir=cfg.qwen3_model_dir,
+                qwen3_ref_audio=cfg.qwen3_ref_audio,
+                qwen3_ref_text=cfg.qwen3_ref_text,
+                qwen3_device=cfg.qwen3_device,
+                keep_model_loaded=cfg.tts_keep_model_loaded,
             ):
                 if abort and abort.is_set():
                     break
@@ -567,6 +642,15 @@ class SIPChannel(BaseChannel):
             session.tts_abort.set()
             logger.debug("Barge-in: TTS aborted for %s", call_id)
 
+    def _on_wake_word(self, call_id: str, keyword: str) -> None:
+        """Called when the KWS gate detects a wake word."""
+        logger.info(
+            "Wake word detected for %s: %s",
+            call_id,
+            keyword,
+        )
+        self._on_speech_start(call_id)
+
     async def _on_transcript(
         self,
         call_id: str,
@@ -601,20 +685,27 @@ class SIPChannel(BaseChannel):
             from qwenpaw.schemas import RunStatus
 
             completed = RunStatus.Completed
+            last_reply = ""
+            last_response = None
             async for event in self._process(request):
-                obj = getattr(event, "object", None)
-                status = getattr(event, "status", None)
-                if obj != "message" or status is None:
-                    continue
-                if status == completed:
-                    text = _extract_text(event)
+                if is_final_voice_message(event):
+                    text = extract_voice_message_text(event)
                     if text:
-                        logger.info(
-                            "Agent reply %s: %s",
-                            call_id,
-                            text[:80],
-                        )
-                        await self.send(call_id, text)
+                        last_reply = text
+                elif (
+                    getattr(event, "object", None) == "response"
+                    and getattr(event, "status", None) == completed
+                ):
+                    last_response = event
+            if not last_reply and last_response is not None:
+                last_reply = self._response_to_text(last_response)
+            if last_reply:
+                logger.info(
+                    "Agent reply %s: %s",
+                    call_id,
+                    last_reply[:80],
+                )
+                await self.send(call_id, last_reply)
         except Exception:
             logger.exception(
                 "Error processing transcript: %s",
@@ -649,29 +740,6 @@ def _clean_for_tts(text: str) -> str:
     # Collapse multiple whitespace/newlines into single space
     text = _re.sub(r"\s+", " ", text).strip()
     return text
-
-
-def _extract_text(event: Any) -> str:
-    """Extract text from an agent response event."""
-    if hasattr(event, "get_text_content"):
-        parts = event.get_text_content()
-        if parts:
-            text = " ".join(
-                p.text for p in parts if hasattr(p, "text") and p.text
-            )
-            if text:
-                return text
-    content = getattr(event, "content", None) or []
-    for part in content:
-        if hasattr(part, "text") and part.text:
-            return part.text
-    message = getattr(event, "message", None)
-    if message:
-        mc = getattr(message, "content", None) or []
-        for part in mc:
-            if hasattr(part, "text") and part.text:
-                return part.text
-    return ""
 
 
 # --------------------------------------------------------------

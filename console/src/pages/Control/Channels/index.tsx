@@ -174,7 +174,8 @@ function ChannelsPage() {
       message.success(t("channels.configSaved"));
     } catch (error) {
       console.error("Failed to update channel config:", error);
-      message.error(t("channels.configFailed"));
+      const detail = error instanceof Error ? error.message : "";
+      message.error(detail || t("channels.configFailed"));
     } finally {
       setSaving(false);
     }

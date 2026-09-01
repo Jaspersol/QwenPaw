@@ -154,6 +154,15 @@ sip = [
     "dashscope>=1.0.0",
     "dashscope-realtime>=0.1.0",
     "audioop-lts; python_version >= '3.13'",
+    # Voice providers for the SIP channel:
+    # edge_tts (Microsoft Edge online TTS) and sherpa-onnx
+    # (Kokoro TTS + KWS wake word + streaming Zipformer ASR).
+    "edge-tts>=7.0.0,<8",
+    "sherpa-onnx>=1.13.0,<2",
+    # Converts custom Chinese wake words into the KWS model's ppinyin tokens.
+    "pypinyin>=0.51.0,<1",
+    # Direct laptop microphone/speaker support for the local_voice channel.
+    "sounddevice>=0.5.0,<1",
 ]
 sip-livekit = [
     "qwenpaw[sip]",

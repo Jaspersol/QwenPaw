@@ -37,6 +37,7 @@ _EXPECTED_BUILTIN_TYPES = {
     "imessage",
     "voice",
     "sip",
+    "local_voice",
     "xiaoyi",
     "yuanbao",
 }

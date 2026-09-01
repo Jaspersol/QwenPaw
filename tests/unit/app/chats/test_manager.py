@@ -153,6 +153,25 @@ async def test_get_or_create_chat_invalid_source_falls_back_to_chat(
 
 
 @pytest.mark.asyncio
+async def test_get_or_create_chat_stores_initial_meta(manager: ChatManager):
+    spec = await manager.get_or_create_chat(
+        session_id="console:voice-seg",
+        user_id="local_user",
+        channel="local_voice",
+        name="语音 · 08:00",
+        meta={"voice": {"root_session_id": "local_voice:local_user"}},
+    )
+
+    assert spec.meta["voice"]["root_session_id"] == "local_voice:local_user"
+
+    persisted = await manager.get_chat(spec.id)
+    assert persisted is not None
+    assert persisted.meta["voice"]["root_session_id"] == (
+        "local_voice:local_user"
+    )
+
+
+@pytest.mark.asyncio
 async def test_set_project_dir_persists_and_clears_controlled_meta(
     manager: ChatManager,
 ):

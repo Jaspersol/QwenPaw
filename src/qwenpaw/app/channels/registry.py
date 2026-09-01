@@ -29,6 +29,7 @@ _BUILTIN_SPECS: dict[str, tuple[str, str]] = {
     "slack": (".slack", "SlackChannel"),
     "voice": (".voice", "VoiceChannel"),
     "sip": (".sip", "SIPChannel"),
+    "local_voice": (".local_voice", "LocalVoiceChannel"),
     "wecom": (".wecom", "WecomChannel"),
     "xiaoyi": (".xiaoyi", "XiaoYiChannel"),
     "yuanbao": (".yuanbao", "YuanbaoChannel"),

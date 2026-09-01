@@ -18,6 +18,7 @@ export const CHANNEL_LABELS: Record<string, string> = {
   console: "Console",
   voice: "Twilio",
   sip: "SIP",
+  local_voice: "Local Voice",
   wecom: "WeCom",
   xiaoyi: "XiaoYi",
   wechat: "WeChat",

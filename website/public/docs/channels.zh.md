@@ -1158,7 +1158,7 @@ qwenpaw init --defaults
 qwenpaw app
 ```
 
-打开 **http://127.0.0.1:8088/** → **设置 → 模型**：配置模型提供商和 API Key。然后进入 **控制 → 频道 → SIP**：启用，填入 DashScope API Key，点击 **保存**。其他字段全部留空即可 — `sip_server` 留空时 QwenPaw 自动启动内置注册服务器，STT/TTS 默认使用 `aliyun`，语音模型自动选择默认音色。
+打开 **http://127.0.0.1:8088/** → **设置 → 模型**：配置模型提供商和 API Key。然后进入 **控制 → 频道 → SIP**：启用，填入 DashScope API Key，点击 **保存**。其他字段全部留空即可 — `sip_server` 留空时 QwenPaw 自动启动内置注册服务器，STT 可在 `aliyun` 和 `sherpa_zipformer` 之间选择，TTS 可在 `aliyun`、`edge_tts`、`kokoro` 之间选择。
 
 QwenPaw 会自动重启 SIP 频道，终端中会看到：
 
@@ -1333,6 +1333,93 @@ pip install "qwenpaw[sip,sip-livekit]"
 5. 自然地继续对话 — 完全支持多轮对话
 6. 支持语音打断：在 Agent 说话时直接开口即可打断
 
+### TTS 提供商选择
+
+SIP 频道的 `tts_provider` 支持三种模式，可在控制台「频道 → SIP」中直接选择，也可以写入 `agent.json`：
+
+| `tts_provider` | 说明 | 是否需要网络 | 依赖 |
+| -------------- | ---- | ------------ | ---- |
+| `aliyun`       | 阿里云 DashScope CosyVoice，默认方案 | 是 | `dashscope` |
+| `edge_tts`     | 微软 Edge 在线 TTS，中文自然度好 | 是 | `edge-tts` + 系统 PATH 中的 `ffmpeg` |
+| `kokoro`       | 本地 Kokoro（中英双语），离线低延迟 | 否 | `sherpa-onnx` + Kokoro 模型文件 |
+| `openai`       | OpenAI 兼容 `/v1/audio/speech`，可对接任意兼容服务 | 是 | `ffmpeg`（解码返回音频） |
+| `qwen3`        | Qwen3-TTS 0.6B：DashScope `qwen3-tts-flash` 或本地 `qwen_tts`，支持音色克隆 | API 模式是 / 本地模式否 | API：`dashscope` + `ffmpeg`；本地：`qwen-tts` + 模型权重 |
+
+`openai` 提供商使用 `tts_api_base_url`、`tts_api_key`、`tts_model` 配置目标接口（Base URL 留空为 `https://api.openai.com/v1`，API Key 留空回退到 `OPENAI_API_KEY`，音色填写在 `tts_voice`，如 `alloy`）。
+
+`qwen3` 提供商通过 `qwen3_backend` 选择 `api` 或 `local`：
+
+- `api`：默认模型 `qwen3-tts-flash`，音色填写系统音色（如 `Cherry`）。克隆返回的 `voice_id` 会自动使用专用的 `qwen3-tts-vc-2026-01-22` 模型合成，避免音色漂移。在 Local Voice 设置中填写 `qwen3_ref_audio` 后点击“Clone voice from reference audio”，会自动上传样本、创建音色并把 `voice_id` 写入 TTS Voice。
+- `local`：填写 `qwen3_model_dir`（留空使用 `Qwen/Qwen3-TTS-12Hz-0.6B-Base`）、`qwen3_ref_audio` 和 `qwen3_ref_text`，通过 `qwen-tts` 加载本地 0.6B 权重进行音色克隆合成。本地合成使用固定随机种子并固定 subtalker，同一参考音色不会因随机采样而漂移。若 `qwen3_device` 选择 `cuda`/`cuda:0` 但当前 torch 无 CUDA 支持，会自动回退到 `cpu` 继续运行。
+
+使用本地 Kokoro：
+
+```bash
+# 1. 安装依赖（sip extra 已包含 edge-tts 和 sherpa-onnx）
+pip install "qwenpaw[sip]"
+
+# 2. 下载并解压模型（约 350MB）
+mkdir -p ~/.qwenpaw/models
+cd ~/.qwenpaw/models
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2
+tar xf kokoro-multi-lang-v1_1.tar.bz2
+```
+
+Windows（PowerShell）下载方式：
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.qwenpaw\models" | Out-Null
+Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2" -OutFile "$env:USERPROFILE\.qwenpaw\models\kokoro.tar.bz2"
+tar -xf "$env:USERPROFILE\.qwenpaw\models\kokoro.tar.bz2" -C "$env:USERPROFILE\.qwenpaw\models"
+```
+
+然后在控制台将 **TTS 提供商** 选为 `Kokoro (local)`。v1.1 默认音色为 `zf_001`（ID 3），也可填写数字音色 ID；模型目录留空时自动使用 `~/.qwenpaw/models/kokoro-multi-lang-v1_1`。CPU 较弱时可选择 `int8`，目录为 `~/.qwenpaw/models/kokoro-int8-multi-lang-v1_1`。
+
+### STT 提供商与唤醒词
+
+SIP 频道的 `stt_provider` 支持：
+
+| `stt_provider`      | 说明 | 是否需要网络 | 依赖 |
+| ------------------- | ---- | ------------ | ---- |
+| `aliyun`            | 阿里云 DashScope Paraformer 流式识别，默认方案 | 是 | `dashscope-realtime` |
+| `sherpa_zipformer`  | 本地流式 Zipformer 中英双语识别（16kHz） | 否 | `sherpa-onnx` + Zipformer 模型文件 |
+| `openai`            | OpenAI 兼容 `/v1/audio/transcriptions`（Whisper），按句调用 | 是 | 无（自带轻量能量 VAD 分句） |
+
+`openai` 提供商使用 `asr_api_base_url`、`asr_api_key`、`asr_model` 配置目标接口（Base URL 留空为 `https://api.openai.com/v1`，API Key 留空回退到 `OPENAI_API_KEY`，模型默认 `whisper-1`）。该接口按“一句话”返回结果，不支持部分识别结果和本地 KWS 唤醒词，因此 `wake_word_enabled` 会被忽略。
+
+使用本地 Zipformer + 唤醒词：
+
+```bash
+# 1. 安装依赖（sip extra 已包含 sherpa-onnx）
+pip install "qwenpaw[sip]"
+
+# 2. 下载 X-ASR 480ms 中英双语带标点 int8 模型（约 134MB）
+mkdir -p ~/.qwenpaw/models
+cd ~/.qwenpaw/models
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2
+tar xf sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2
+
+# 3. 下载中文 KWS mobile 模型（约 15MB）
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2
+tar xf sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2
+```
+
+Windows（PowerShell）：
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.qwenpaw\models" | Out-Null
+Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2" -OutFile "$env:USERPROFILE\.qwenpaw\models\zipformer.tar.bz2"
+Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2" -OutFile "$env:USERPROFILE\.qwenpaw\models\kws.tar.bz2"
+tar -xf "$env:USERPROFILE\.qwenpaw\models\zipformer.tar.bz2" -C "$env:USERPROFILE\.qwenpaw\models"
+tar -xf "$env:USERPROFILE\.qwenpaw\models\kws.tar.bz2" -C "$env:USERPROFILE\.qwenpaw\models"
+```
+
+然后在控制台将 **STT 提供商** 选为 `Sherpa Zipformer (local)`：
+
+- 不开启唤醒词时，通话音频直接进入流式识别。
+- 开启唤醒词后，只有先命中 KWS 关键词才会把音频送入 ASR；每次识别完成后自动回到待唤醒状态。
+- 默认 KWS 模型内置多个中文唤醒词（小爱同学、小艺小艺、小米小米等）。自定义唤醒词可以准备 sherpa-onnx 格式的 token 化 `keywords.txt` 填入 `kws_keywords_file`，也可以直接在该字段填入一个中文唤醒词（后端会将其转换为模型所需的拼音 token）。
+
 ### SIP 频道专属字段说明
 
 | 字段                 | 类型   | 默认值                                       | 说明                                                   |
@@ -1349,12 +1436,109 @@ pip install "qwenpaw[sip,sip-livekit]"
 | `livekit_url`        | string | `""`                                         | LiveKit Server WebSocket URL（生产模式）               |
 | `livekit_api_key`    | string | `""`                                         | LiveKit API 密钥（生产模式）                           |
 | `livekit_api_secret` | string | `""`                                         | LiveKit API 密钥（生产模式）                           |
-| `tts_provider`       | string | `"aliyun"`                                   | TTS 提供商（目前支持 `aliyun`）                        |
-| `tts_voice`          | string | `"longxiaochun"`                             | TTS 语音模型                                           |
-| `stt_provider`       | string | `"aliyun"`                                   | STT 提供商（目前支持 `aliyun`）                        |
-| `language`           | string | `"zh-CN"`                                    | 语言代码                                               |
+| `tts_provider`       | string | `"aliyun"`                                   | TTS 提供商：`aliyun`、`edge_tts`、`kokoro`、`openai`    |
+| `tts_voice`          | string | `""`                                         | TTS 音色：aliyun 如 `longxiaochun`；edge_tts 如 `zh-CN-XiaoxiaoNeural`；Kokoro v1.1 如 `zf_001` 或数字 `3`；openai 如 `alloy` |
+| `tts_api_base_url`   | string | `""`                                         | OpenAI 兼容 TTS Base URL，留空为 `https://api.openai.com/v1` |
+| `tts_api_key`        | string | `""`                                         | OpenAI 兼容 TTS API Key，留空回退到 `OPENAI_API_KEY`    |
+| `tts_model`          | string | `"tts-1"`                                    | OpenAI 兼容 TTS 模型名，如 `tts-1`、`tts-1-hd`          |
+| `qwen3_backend`      | string | `"api"`                                      | Qwen3-TTS 运行方式：`api`（DashScope）或 `local`（qwen-tts） |
+| `qwen3_model`        | string | `"qwen3-tts-flash"`                          | Qwen3-TTS API 合成模型名 |
+| `qwen3_model_dir`    | string | `""`                                         | 本地 Qwen3-TTS 模型目录或 Hugging Face 仓库 ID |
+| `qwen3_ref_audio`    | string | `""`                                         | 音色克隆参考音频：本地路径或 HTTP(S)/OSS URL |
+| `qwen3_ref_text`     | string | `""`                                         | 参考音频中的文本，本地克隆必需 |
+| `qwen3_device`       | string | `"cpu"`                                      | 本地推理设备，如 cpu/cuda/cuda:0/mps |
+| `kokoro_model_dir`   | string | `""`                                         | Kokoro 模型目录，留空回退到 `KOKORO_MODEL_DIR` 或 v1.1 默认目录 |
+| `kokoro_model_variant` | string | `"float32"` | `float32`（质量优先）或 `int8`（CPU 优先） |
+| `kokoro_num_threads` | int    | `2`                                          | Kokoro 本地推理 CPU 线程数                              |
+| `tts_keep_model_loaded` | bool | `true`                                       | 本地 Kokoro 模型是否常驻缓存；关闭后每次合成时加载、用后释放 |
+| `stt_provider`          | string | `"aliyun"`                                   | STT 提供商：`aliyun`、`sherpa_zipformer`、`openai`      |
+| `asr_api_base_url`      | string | `""`                                         | OpenAI 兼容 Whisper Base URL，留空为 `https://api.openai.com/v1` |
+| `asr_api_key`           | string | `""`                                         | OpenAI 兼容 ASR API Key，留空回退到 `OPENAI_API_KEY`    |
+| `asr_model`             | string | `"whisper-1"`                                | OpenAI 兼容 ASR 模型名，如 `whisper-1`                  |
+| `zipformer_model_dir`   | string | `""`                                         | 本地 X-ASR 480ms 模型目录，留空回退到 `ZIPFORMER_MODEL_DIR` 或默认模型目录 |
+| `zipformer_num_threads` | int    | `2`                                          | 本地 Zipformer ASR 推理 CPU 线程数                                |
+| `asr_keep_model_loaded` | bool   | `true`                                       | 本地 Zipformer/KWS 模型是否常驻缓存并在频道重启后复用；关闭则停止时释放 |
+| `wake_word_enabled`     | bool   | `false`                                      | 是否启用 KWS 唤醒词门卫                                           |
+| `kws_model_dir`         | string | `""`                                         | KWS 模型目录，留空回退到 `KWS_MODEL_DIR` 或 zh-en 3M 默认模型目录 |
+| `kws_keywords_file`     | string | `""`                                         | 自定义 KWS 关键词文件路径或字面唤醒词；留空使用模型内置关键词     |
+| `kws_num_threads`       | int    | `1`                                          | KWS 常驻检测推理 CPU 线程数                                        |
+| `language`              | string | `"zh-CN"`                                    | 语言代码（aliyun / openai STT 使用）                              |
 | `welcome_greeting`   | string | `"Hi! This is QwenPaw. How can I help you?"` | 欢迎语（接通电话后的第一句话）                         |
 | `call_timeout`       | float  | `30.0`                                       | 呼出超时时间（秒）                                     |
+
+## Local Voice（本机麦克风 / 扬声器）
+
+Local Voice 频道直接使用运行 QwenPaw 的电脑麦克风和扬声器，不需要 SIP 软电话、浏览器或任何外部设备。启用后 QwenPaw 在后台采集麦克风；开启唤醒词时只有命中关键词才进入 ASR，回复通过所选 TTS 直接在本机扬声器播放。
+
+### 安装与启用
+
+```bash
+pip install "qwenpaw[sip]"
+```
+
+在 **控制 → 频道 → Local Voice** 中启用，推荐配置：
+
+| 字段 | 值 |
+| ---- | ---- |
+| 输入设备编号 | 留空（系统默认麦克风） |
+| 输出设备编号 | 留空（系统默认扬声器） |
+| 麦克风采样率 | `16000` |
+| TTS 播放采样率 | `24000` |
+| STT Provider | `Sherpa Zipformer (local)` |
+| 启用唤醒词 | 开 |
+| KWS 模型目录 | 留空 |
+| TTS Provider | `Kokoro (local)` |
+| TTS 语音 | `zf_001` |
+| 欢迎语 | `本地语音助手已启动` |
+
+模型目录规则与 SIP 频道一致：
+
+- X-ASR：`~/.qwenpaw/models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05`
+- KWS：`~/.qwenpaw/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20`
+- Kokoro：`~/.qwenpaw/models/kokoro-multi-lang-v1_1`
+- Qwen3-TTS 0.6B：`~/.qwenpaw/models/Qwen3-TTS-12Hz-0.6B-Base`（Hugging Face 快照）
+
+Local Voice 设置页的模型管理区对以上所有本地模型都提供 **Download** 和 **Delete** 按钮；删除前会二次确认。
+
+**Dependencies** 面板会列出当前所有可安装依赖（包括 CUDA 12.8 版 PyTorch）。当前已选 ASR/TTS 设置所需的依赖会标为 “Required by current settings”，每个依赖都有独立的 **Install** / **Uninstall** 按钮。CUDA torch 条目从官方 `download.pytorch.org/whl/cu128` 源安装，并替换 CPU 版 torch。
+
+本地 Qwen3-TTS 的推理设备为下拉选择项。检测到 CUDA 版 torch 后，会逐张列出显卡（`cuda:0`、`cuda:1` …）及其名称，可直接选择独立显卡，避免运行时隐式落到核显。安装新的 CUDA 构建后可点击 “Refresh device list” 刷新；若 QwenPaw 是用 CPU 版 torch 启动的，安装完成后需重启 QwenPaw 才能加载新 wheel。
+
+本地 Provider 下可分别打开“常驻加载 ASR 模型 / 常驻加载 TTS 模型”开关：开启时模型常驻内存并在频道重启后复用；关闭时按需加载、用后释放，适合内存紧张的环境。
+
+Qwen3-TTS 的音色克隆结果会复用：本地模式把 `voice_clone_prompt` 按参考音频内容哈希持久化到 `~/.qwenpaw/models/qwen3-tts-clones`，同一参考音频不会重复计算；API 模式克隆成功后 `voice_id` 自动写入 `tts_voice` 并随配置保存，重启后继续复用。
+
+不需要本地模型时，STT 可选 `OpenAI-compatible (Whisper)`、TTS 可选 `OpenAI-compatible API`，填写对应的 ASR/TTS API Base URL、Key 和模型（字段与 SIP 频道相同）。openai STT 为按句接口，本地 KWS 唤醒词会被忽略。Local Voice 设置页的硬件测试按钮使用当前选中的提供商：ASR/TTS 测试会直接调用所配置的 API 接口，唤醒词测试仅在本地 Zipformer 提供商下显示。
+
+### 使用
+
+保存后 QwenPaw 会播放欢迎语（TTS 直接输出）。然后说内置唤醒词（如“小爱同学”“小艺小艺”“小米小米”），再说指令即可。只说唤醒词时助手会回复“在”；收到指令后会先回复“收到，正在处理中”再交给 Agent。任务处理期间的插话不会打断当前任务，而是固定提示“当前有任务正在处理中”；如果此刻正在播放 TTS 回复，则不再播报该提示。播放回复期间麦克风自动暂停识别，避免助手听到自己的声音产生回声触发。
+
+对应 `agent.json` 配置：
+
+```json
+{
+  "channels": {
+    "local_voice": {
+      "enabled": true,
+      "input_device": null,
+      "output_device": null,
+      "stt_provider": "sherpa_zipformer",
+      "zipformer_model_dir": "",
+      "zipformer_num_threads": 2,
+      "wake_word_enabled": true,
+      "kws_model_dir": "",
+      "kws_keywords_file": "",
+      "kws_num_threads": 1,
+      "tts_provider": "kokoro",
+      "tts_voice": "zf_001",
+      "kokoro_model_dir": "",
+      "kokoro_num_threads": 2,
+      "welcome_greeting": "本地语音助手已启动"
+    }
+  }
+}
+```
 
 ## Azure Bot（Microsoft 机器人服务）
 

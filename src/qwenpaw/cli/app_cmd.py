@@ -78,7 +78,11 @@ Recommended:
 @click.option(
     "--hide-access-paths",
     multiple=True,
-    default=("/console/push-messages", "/console/inbox/events"),
+    default=(
+        "/console/push-messages",
+        "/console/inbox/events",
+        "/assets/",
+    ),
     show_default=True,
     help="Path substrings to hide from uvicorn access log (repeatable).",
 )

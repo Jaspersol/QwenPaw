@@ -1140,7 +1140,7 @@ qwenpaw init --defaults
 qwenpaw app
 ```
 
-Open **http://127.0.0.1:8088/** → **Settings → Models**: configure a model provider and API key. Then go to **Control → Channels → SIP**: enable it, fill in your DashScope API Key, and click **Save**. All other fields can be left at their defaults — when `sip_server` is empty, QwenPaw automatically starts a built-in registrar, uses `aliyun` for STT/TTS, and picks a default voice.
+Open **http://127.0.0.1:8088/** → **Settings → Models**: configure a model provider and API key. Then go to **Control → Channels → SIP**: enable it, fill in your DashScope API Key, and click **Save**. All other fields can be left at their defaults — when `sip_server` is empty, QwenPaw automatically starts a built-in registrar, lets you choose STT between `aliyun` and `sherpa_zipformer`, and lets you choose TTS between `aliyun`, `edge_tts`, and `kokoro`.
 
 QwenPaw will restart the SIP channel automatically. You'll see in the terminal:
 
@@ -1315,6 +1315,93 @@ After configuration, start a call from your SIP phone or browser:
 5. Continue the conversation naturally — multi-turn is fully supported
 6. Barge-in supported: start speaking while the agent is talking to interrupt
 
+### TTS provider selection
+
+The SIP channel's `tts_provider` supports five backends. You can pick one in the Console under **Channels → SIP**, or set it directly in `agent.json`:
+
+| `tts_provider` | Description | Network required | Dependencies |
+| -------------- | ----------- | ---------------- | ------------ |
+| `aliyun`       | Aliyun DashScope CosyVoice (default) | Yes | `dashscope` |
+| `edge_tts`     | Microsoft Edge online TTS, natural Chinese voices | Yes | `edge-tts` plus `ffmpeg` on PATH |
+| `kokoro`       | Local Kokoro (Chinese + English), offline and low-latency | No | `sherpa-onnx` plus Kokoro model files |
+| `openai`       | OpenAI-compatible `/v1/audio/speech` API | Yes | `ffmpeg` (to decode the returned audio) |
+| `qwen3`        | Qwen3-TTS 0.6B via DashScope `qwen3-tts-flash` or local `qwen_tts`, with voice cloning | API mode: yes / local mode: no | API: `dashscope` + `ffmpeg`; local: `qwen-tts` + model weights |
+
+For `openai`, configure `tts_api_base_url`, `tts_api_key`, and `tts_model`. An empty base URL resolves to `https://api.openai.com/v1`, an empty API key falls back to `OPENAI_API_KEY`, and the voice is set in `tts_voice` (e.g. `alloy`).
+
+For `qwen3`, choose the backend with `qwen3_backend`:
+
+- `api` uses `qwen3-tts-flash` by default. `tts_voice` accepts a system voice (e.g. `Cherry`); a cloned `voice_id` is automatically synthesized with the dedicated `qwen3-tts-vc-2026-01-22` model so the timbre stays stable. In the Local Voice settings, fill `qwen3_ref_audio` and press “Clone voice from reference audio” to upload the sample, create a cloned voice, and write its id into TTS Voice.
+- `local` loads `Qwen/Qwen3-TTS-12Hz-0.6B-Base` (or `qwen3_model_dir`) through the `qwen-tts` package. Set `qwen3_ref_audio` and `qwen3_ref_text` for voice cloning. Local synthesis uses a fixed random seed and a deterministic subtalker so the same cloned voice does not drift due to random sampling. If `qwen3_device` is `cuda`/`cuda:0` but the installed torch has no CUDA support, it automatically falls back to `cpu`.
+
+Using local Kokoro:
+
+```bash
+# 1. Install dependencies (the sip extra includes edge-tts and sherpa-onnx)
+pip install "qwenpaw[sip]"
+
+# 2. Download and extract the model (~350MB)
+mkdir -p ~/.qwenpaw/models
+cd ~/.qwenpaw/models
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2
+tar xf kokoro-multi-lang-v1_1.tar.bz2
+```
+
+On Windows (PowerShell):
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.qwenpaw\models" | Out-Null
+Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_1.tar.bz2" -OutFile "$env:USERPROFILE\.qwenpaw\models\kokoro.tar.bz2"
+tar -xf "$env:USERPROFILE\.qwenpaw\models\kokoro.tar.bz2" -C "$env:USERPROFILE\.qwenpaw\models"
+```
+
+Then select **TTS Provider → Kokoro (local)** in the Console. Kokoro v1.1 defaults to `zf_001` (speaker ID 3); numeric speaker IDs are also accepted. An empty model directory uses `~/.qwenpaw/models/kokoro-multi-lang-v1_1`; select `int8` for lower CPU use at `~/.qwenpaw/models/kokoro-int8-multi-lang-v1_1`.
+
+### STT provider and wake word
+
+The SIP channel's `stt_provider` supports:
+
+| `stt_provider`     | Description | Network required | Dependencies |
+| ------------------ | ----------- | ---------------- | ------------ |
+| `aliyun`           | Aliyun DashScope Paraformer streaming ASR (default) | Yes | `dashscope-realtime` |
+| `sherpa_zipformer` | Local streaming bilingual (zh/en) Zipformer ASR at 16kHz | No | `sherpa-onnx` plus Zipformer model files |
+| `openai`           | OpenAI-compatible `/v1/audio/transcriptions` (Whisper), one request per utterance | Yes | None (built-in lightweight energy VAD) |
+
+For `openai`, configure `asr_api_base_url`, `asr_api_key`, and `asr_model`. An empty base URL resolves to `https://api.openai.com/v1`, an empty API key falls back to `OPENAI_API_KEY`, and the default model is `whisper-1`. This endpoint returns a transcript per utterance rather than streaming partials, and local KWS wake-word gating is unavailable, so `wake_word_enabled` is ignored.
+
+Using local Zipformer with wake word:
+
+```bash
+# 1. Install dependencies (the sip extra includes sherpa-onnx)
+pip install "qwenpaw[sip]"
+
+# 2. Download the X-ASR 480ms streaming bilingual punctuation int8 model (~134MB)
+mkdir -p ~/.qwenpaw/models
+cd ~/.qwenpaw/models
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2
+tar xf sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2
+
+# 3. Download the Chinese KWS mobile model (~15MB)
+wget https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2
+tar xf sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2
+```
+
+On Windows (PowerShell):
+
+```powershell
+New-Item -ItemType Directory -Force "$env:USERPROFILE\.qwenpaw\models" | Out-Null
+Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05.tar.bz2" -OutFile "$env:USERPROFILE\.qwenpaw\models\zipformer.tar.bz2"
+Invoke-WebRequest -Uri "https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20.tar.bz2" -OutFile "$env:USERPROFILE\.qwenpaw\models\kws.tar.bz2"
+tar -xf "$env:USERPROFILE\.qwenpaw\models\zipformer.tar.bz2" -C "$env:USERPROFILE\.qwenpaw\models"
+tar -xf "$env:USERPROFILE\.qwenpaw\models\kws.tar.bz2" -C "$env:USERPROFILE\.qwenpaw\models"
+```
+
+Then select **STT Provider → Sherpa Zipformer (local)** in the Console:
+
+- With the wake word disabled, call audio goes directly to the streaming recognizer.
+- With the wake word enabled, audio is decoded only after the KWS keyword is detected; the gate re-arms after each recognized utterance.
+- The default KWS model ships Chinese wake words such as 小爱同学, 小艺小艺, and 小米小米. Custom wake words can either use a sherpa-onnx tokenized `keywords.txt` supplied via `kws_keywords_file`, or set that field to a literal Chinese wake word (converted to the model's pinyin tokens automatically).
+
 ### SIP channel fields
 
 | Field                | Type   | Default                                      | Description                                                             |
@@ -1331,14 +1418,111 @@ After configuration, start a call from your SIP phone or browser:
 | `livekit_url`        | string | `""`                                         | LiveKit Server WebSocket URL (production mode)                          |
 | `livekit_api_key`    | string | `""`                                         | LiveKit API key (production mode)                                       |
 | `livekit_api_secret` | string | `""`                                         | LiveKit API secret (production mode)                                    |
-| `tts_provider`       | string | `"aliyun"`                                   | TTS provider (currently supports `aliyun`)                              |
-| `tts_voice`          | string | `"longxiaochun"`                             | TTS voice model                                                         |
-| `stt_provider`       | string | `"aliyun"`                                   | STT provider (currently supports `aliyun`)                              |
-| `language`           | string | `"zh-CN"`                                    | Language code                                                           |
+| `tts_provider`       | string | `"aliyun"`                                   | TTS provider: `aliyun`, `edge_tts`, `kokoro`, or `openai`               |
+| `tts_voice`          | string | `""`                                         | TTS voice: aliyun e.g. `longxiaochun`; edge_tts e.g. `zh-CN-XiaoxiaoNeural`; Kokoro v1.1 e.g. `zf_001` or numeric `3`; openai e.g. `alloy` |
+| `tts_api_base_url`   | string | `""`                                         | OpenAI-compatible TTS base URL. Empty uses `https://api.openai.com/v1`  |
+| `tts_api_key`        | string | `""`                                         | OpenAI-compatible TTS API key. Empty falls back to `OPENAI_API_KEY`     |
+| `tts_model`          | string | `"tts-1"`                                    | OpenAI-compatible TTS model, e.g. `tts-1` or `tts-1-hd`                 |
+| `qwen3_backend`      | string | `"api"`                                      | Qwen3-TTS backend: `api` (DashScope) or `local` (qwen-tts)              |
+| `qwen3_model`        | string | `"qwen3-tts-flash"`                          | Qwen3-TTS DashScope synthesis model                                     |
+| `qwen3_model_dir`    | string | `""`                                         | Local Qwen3-TTS model directory or Hugging Face repo id                 |
+| `qwen3_ref_audio`    | string | `""`                                         | Voice-clone reference audio: local path or HTTP(S)/OSS URL              |
+| `qwen3_ref_text`     | string | `""`                                         | Text spoken in the reference audio; required for local cloning          |
+| `qwen3_device`       | string | `"cpu"`                                      | Local inference device, e.g. cpu/cuda/cuda:0/mps                         |
+| `kokoro_model_dir`   | string | `""`                                         | Kokoro model directory. Empty falls back to `KOKORO_MODEL_DIR` or the v1.1 default directory |
+| `kokoro_model_variant` | string | `"float32"` | `float32` for quality or `int8` for lower CPU use |
+| `kokoro_num_threads` | int    | `2`                                          | Number of CPU threads for local Kokoro inference                        |
+| `tts_keep_model_loaded` | bool | `true`                                       | Keep the local Kokoro model cached in memory; when disabled it is loaded per request and released after use |
+| `stt_provider`          | string | `"aliyun"`                                   | STT provider: `aliyun`, `sherpa_zipformer`, or `openai`                 |
+| `asr_api_base_url`      | string | `""`                                         | OpenAI-compatible Whisper base URL. Empty uses `https://api.openai.com/v1` |
+| `asr_api_key`           | string | `""`                                         | OpenAI-compatible ASR API key. Empty falls back to `OPENAI_API_KEY`     |
+| `asr_model`             | string | `"whisper-1"`                                | OpenAI-compatible ASR model, e.g. `whisper-1`                           |
+| `zipformer_model_dir`   | string | `""`                                         | Local X-ASR 480ms model directory. Empty falls back to `ZIPFORMER_MODEL_DIR` or the default model directory |
+| `zipformer_num_threads` | int    | `2`                                          | Number of CPU threads for local Zipformer ASR inference                  |
+| `asr_keep_model_loaded` | bool   | `true`                                       | Keep local Zipformer/KWS models cached and reused after channel restarts; when disabled they are released on stop |
+| `wake_word_enabled`     | bool   | `false`                                      | Enable the KWS wake-word gate                                            |
+| `kws_model_dir`         | string | `""`                                         | KWS model directory. Empty falls back to `KWS_MODEL_DIR` or the zh-en 3M default model directory |
+| `kws_keywords_file`     | string | `""`                                         | Custom tokenized KWS keywords file path or literal wake word; empty uses the model's built-in keywords |
+| `kws_num_threads`       | int    | `1`                                          | Number of CPU threads for the always-on keyword spotter                  |
+| `language`              | string | `"zh-CN"`                                    | Language code (used by aliyun and openai STT)                            |
 | `welcome_greeting`   | string | `"Hi! This is QwenPaw. How can I help you?"` | Welcome message when call connects                                      |
 | `call_timeout`       | float  | `30.0`                                       | Outbound call timeout in seconds                                        |
 
 ---
+
+## Local Voice (computer microphone / speakers)
+
+The Local Voice channel uses the computer's microphone and speakers directly. No SIP softphone, browser, or external device is required. Once enabled, QwenPaw captures the microphone in the background; with the wake word enabled, audio is decoded only after the keyword, and replies are played through the selected TTS provider on the local output device.
+
+### Install and enable
+
+```bash
+pip install "qwenpaw[sip]"
+```
+
+Enable it in **Control → Channels → Local Voice**. Recommended settings:
+
+| Field | Value |
+| ----- | ----- |
+| Input Device Index | empty (system default microphone) |
+| Output Device Index | empty (system default speakers) |
+| Microphone Sample Rate | `16000` |
+| TTS Playback Sample Rate | `24000` |
+| STT Provider | `Sherpa Zipformer (local)` |
+| Enable Wake Word | on |
+| KWS Model Directory | empty |
+| TTS Provider | `Kokoro (local)` |
+| TTS Voice | `zf_001` |
+| Welcome Greeting | `本地语音助手已启动` |
+
+The model directories follow the same rules as the SIP channel:
+
+- X-ASR: `~/.qwenpaw/models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05`
+- KWS: `~/.qwenpaw/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20`
+- Kokoro: `~/.qwenpaw/models/kokoro-multi-lang-v1_1`
+- Qwen3-TTS 0.6B: `~/.qwenpaw/models/Qwen3-TTS-12Hz-0.6B-Base` (Hugging Face snapshot)
+
+The model manager in the Local Voice settings provides **Download** and **Delete** buttons for every local model listed above; deletion asks for confirmation first.
+
+The **Dependencies** panel lists every installable Local Voice dependency, including the CUDA 12.8 PyTorch build. Entries required by the currently selected ASR/TTS settings are marked “Required by current settings”, and each entry has its own **Install** / **Uninstall** button. The CUDA torch entry is installed from the official `download.pytorch.org/whl/cu128` index and replaces the CPU torch wheel.
+
+For local Qwen3-TTS the inference device is a dropdown instead of a free-text field. When a CUDA-enabled torch build is detected, each GPU is listed individually (`cuda:0`, `cuda:1`, …) with its device name so you can explicitly select a discrete GPU instead of letting the runtime fall back to integrated graphics. Use “Refresh device list” after installing a new CUDA build; if QwenPaw was started with the CPU build, restart QwenPaw after installation so the new wheel is loaded.
+
+For local providers, two switches control long-lived model caching: “Keep ASR Model Loaded” and “Keep TTS Model Loaded”. When enabled, models stay in memory and are reused after channel restarts; when disabled, they are loaded on demand and released after use to save memory.
+
+Qwen3-TTS clone results are reused: local mode persists `voice_clone_prompt` under `~/.qwenpaw/models/qwen3-tts-clones` keyed by reference-audio content hash, so the same sample is never recomputed; API mode writes the returned `voice_id` into `tts_voice`, which is saved with the channel config and reused after restarts.
+
+No local models are needed for the API providers: choose `OpenAI-compatible (Whisper)` for STT and `OpenAI-compatible API` for TTS, then fill in the ASR/TTS API base URL, key, and model fields (same options as the SIP channel). With the openai STT provider the local wake-word gate is ignored. The hardware test buttons in the Local Voice settings use the currently selected provider, so the ASR/TTS tests call the configured API endpoint directly; the wake-word test is only shown for the local Zipformer provider.
+
+### Usage
+
+After saving, QwenPaw plays the welcome greeting directly through the selected TTS provider. Say a built-in wake word (e.g. 小爱同学, 小艺小艺, 小米小米), then your command. Saying only the wake word gets the fixed reply “在”; a recognized command gets “收到，正在处理中” before it is handed to the Agent. Interruptions while a task is running do not interrupt the current work — the assistant replies with the fixed prompt “当前有任务正在处理中”, unless a TTS reply is already playing, in which case the prompt is skipped. While a reply is playing, microphone audio is drained but not decoded, so the assistant does not trigger on its own voice.
+
+Equivalent `agent.json` configuration:
+
+```json
+{
+  "channels": {
+    "local_voice": {
+      "enabled": true,
+      "input_device": null,
+      "output_device": null,
+      "stt_provider": "sherpa_zipformer",
+      "zipformer_model_dir": "",
+      "zipformer_num_threads": 2,
+      "wake_word_enabled": true,
+      "kws_model_dir": "",
+      "kws_keywords_file": "",
+      "kws_num_threads": 1,
+      "tts_provider": "kokoro",
+      "tts_voice": "zf_001",
+      "kokoro_model_dir": "",
+      "kokoro_num_threads": 2,
+      "welcome_greeting": "本地语音助手已启动"
+    }
+  }
+}
+```
 
 ## Azure Bot (Microsoft Bot Service)
 

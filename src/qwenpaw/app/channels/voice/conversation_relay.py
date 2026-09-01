@@ -11,9 +11,9 @@ from fastapi import WebSocketDisconnect
 from qwenpaw.schemas import (
     ContentType,
     MessageType,
-    RunStatus,
 )
 
+from ..utils import extract_voice_message_text, is_final_voice_message
 from .session import CallSessionManager
 
 if TYPE_CHECKING:
@@ -194,10 +194,9 @@ class ConversationRelayHandler:
                 if self._closed:
                     break
                 obj = getattr(event, "object", None)
-                status = getattr(event, "status", None)
 
-                if obj == "message" and status == RunStatus.Completed:
-                    text = self._extract_text_from_event(event)
+                if is_final_voice_message(event):
+                    text = extract_voice_message_text(event)
                     if text:
                         await self._send_token(text, last=False)
                         await self._send_token("", last=True)
@@ -223,26 +222,6 @@ class ConversationRelayHandler:
             if not self._closed:
                 await self._send_token(_ERROR_MSG, last=False)
                 await self._send_token("", last=True)
-
-    @staticmethod
-    def _extract_text_from_event(event: Any) -> str:
-        """Extract plain text from a completed message event."""
-        content = getattr(event, "content", None)
-        if not content:
-            return ""
-
-        parts: list[str] = []
-        for c in content:
-            ct = getattr(c, "type", None)
-            if ct == ContentType.TEXT:
-                text = getattr(c, "text", None)
-                if text:
-                    parts.append(text.strip())
-            elif ct == ContentType.REFUSAL:
-                refusal = getattr(c, "refusal", None)
-                if refusal:
-                    parts.append(refusal.strip())
-        return " ".join(parts)
 
     async def _send_token(
         self,

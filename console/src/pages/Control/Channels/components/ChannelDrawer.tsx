@@ -8,17 +8,23 @@ import {
   Select,
 } from "@agentscope-ai/design";
 import { useAppMessage } from "../../../../hooks/useAppMessage";
-import { Alert, ConfigProvider } from "antd";
+import { useQwen3VoiceClone } from "../../../../hooks/useQwen3VoiceClone";
+import { Alert, ConfigProvider, Typography } from "antd";
 import { LinkOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { FormInstance } from "antd";
+import {
+  localVoiceApi,
+  type LocalVoiceDeviceOption,
+} from "@/api/modules/localVoice";
 import { getChannelLabel, isLoopbackHost, type ChannelKey } from "./constants";
 import { QrcodeAuthBlock } from "./QrcodeAuthBlock";
 import type { ChannelSchema } from "../../../../api/modules/channel";
 import styles from "../index.module.less";
 import { useAgentStore } from "../../../../stores/agentStore";
 import { openExternalLink } from "../../../../utils/openExternalLink";
+import { LocalVoiceTools } from "./LocalVoiceTools";
 
 const CHANNELS_WITH_ACCESS_CONTROL: ChannelKey[] = [
   "telegram",
@@ -52,6 +58,8 @@ const CHANNEL_DOC_EN_URLS: Partial<Record<ChannelKey, string>> = {
   mattermost: "https://qwenpaw.agentscope.io/docs/channels/?lang=en#Mattermost",
   matrix: "https://qwenpaw.agentscope.io/docs/channels/?lang=en#Matrix",
   sip: "https://qwenpaw.agentscope.io/docs/channels/?lang=en#SIP",
+  local_voice:
+    "https://qwenpaw.agentscope.io/docs/channels/?lang=en#Local-Voice-computer-microphone--speakers",
   wecom:
     "https://qwenpaw.agentscope.io/docs/channels/?lang=en#WeCom-WeChat-Work",
   wechat:
@@ -77,6 +85,8 @@ const CHANNEL_DOC_ZH_URLS: Partial<Record<ChannelKey, string>> = {
   mattermost: "https://qwenpaw.agentscope.io/docs/channels/?lang=zh#Mattermost",
   matrix: "https://qwenpaw.agentscope.io/docs/channels/?lang=zh#Matrix",
   sip: "https://qwenpaw.agentscope.io/docs/channels/?lang=zh#SIP",
+  local_voice:
+    "https://qwenpaw.agentscope.io/docs/channels/?lang=zh#Local-Voice本机麦克风--扬声器",
   wecom: "https://qwenpaw.agentscope.io/docs/channels/?lang=zh#企业微信",
   wechat: "https://qwenpaw.agentscope.io/docs/channels/?lang=zh#微信个人iLink",
   xiaoyi:
@@ -150,6 +160,260 @@ interface ChannelDrawerProps {
   channelSchema?: ChannelSchema;
   onClose: () => void;
   onSubmit: (values: Record<string, unknown>) => void;
+}
+
+function OpenAiSpeechApiFields({ kind }: { kind: "asr" | "tts" }) {
+  const { t } = useTranslation();
+  const isAsr = kind === "asr";
+  const fieldPrefix = isAsr ? "asr_api" : "tts_api";
+  return (
+    <div
+      style={{
+        border: "1px solid #f0f0f0",
+        borderRadius: 8,
+        background: "rgba(0, 0, 0, 0.02)",
+        padding: "10px 12px",
+        marginBottom: 12,
+      }}
+    >
+      <Typography.Text
+        type="secondary"
+        style={{ fontSize: 12, display: "block", marginBottom: 8 }}
+      >
+        {isAsr
+          ? t("channels.asrApiSectionHint")
+          : t("channels.ttsApiSectionHint")}
+      </Typography.Text>
+      <Form.Item
+        name={`${fieldPrefix}_base_url`}
+        label={
+          isAsr ? t("channels.asrApiBaseUrl") : t("channels.ttsApiBaseUrl")
+        }
+        tooltip={
+          isAsr
+            ? t("channels.asrApiBaseUrlTooltip")
+            : t("channels.ttsApiBaseUrlTooltip")
+        }
+        style={{ marginBottom: 8 }}
+      >
+        <Input placeholder="https://api.openai.com/v1" />
+      </Form.Item>
+      <Form.Item
+        name={`${fieldPrefix}_key`}
+        label={isAsr ? t("channels.asrApiKey") : t("channels.ttsApiKey")}
+        tooltip={
+          isAsr
+            ? t("channels.asrApiKeyTooltip")
+            : t("channels.ttsApiKeyTooltip")
+        }
+        style={{ marginBottom: 8 }}
+      >
+        <Input.Password placeholder="sk-..." />
+      </Form.Item>
+      <Form.Item
+        name={`${fieldPrefix}_model`}
+        label={isAsr ? t("channels.asrApiModel") : t("channels.ttsApiModel")}
+        tooltip={
+          isAsr
+            ? t("channels.asrApiModelTooltip")
+            : t("channels.ttsApiModelTooltip")
+        }
+        style={{ marginBottom: 0 }}
+      >
+        <Input placeholder={isAsr ? "whisper-1" : "tts-1"} />
+      </Form.Item>
+    </div>
+  );
+}
+
+const FALLBACK_DEVICES: LocalVoiceDeviceOption[] = [
+  { value: "cpu", label: "CPU", available: true, description: "" },
+];
+
+function Qwen3TtsFields({ cloneButton = false }: { cloneButton?: boolean }) {
+  const { t } = useTranslation();
+  const form = Form.useFormInstance();
+  const qwen3Backend = Form.useWatch("qwen3_backend", form) ?? "api";
+  const [devices, setDevices] =
+    useState<LocalVoiceDeviceOption[]>(FALLBACK_DEVICES);
+  const [loadingDevices, setLoadingDevices] = useState(false);
+  const getCloneConfig = useCallback(
+    () => form.getFieldsValue(true) as Record<string, unknown>,
+    [form],
+  );
+  const onCloned = useCallback(
+    (voiceId: string) => form.setFieldValue("tts_voice", voiceId),
+    [form],
+  );
+  const { cloning, cloneVoice } = useQwen3VoiceClone(
+    getCloneConfig,
+    onCloned,
+  );
+  const loadDevices = useCallback(async () => {
+    setLoadingDevices(true);
+    try {
+      const items = await localVoiceApi.getQwen3Devices();
+      setDevices(items.length > 0 ? items : FALLBACK_DEVICES);
+    } catch {
+      /* keep the cpu fallback */
+    } finally {
+      setLoadingDevices(false);
+    }
+  }, []);
+  useEffect(() => {
+    if ((qwen3Backend || "api") === "local") {
+      void loadDevices();
+    }
+  }, [loadDevices, qwen3Backend]);
+  const selectedDevice = String(form.getFieldValue("qwen3_device") ?? "");
+  const deviceOptions = devices.map((device) => ({
+    value: device.value,
+    label: device.label,
+    disabled: !device.available,
+    title: device.description,
+  }));
+  if (
+    selectedDevice &&
+    !devices.some((device) => device.value === selectedDevice)
+  ) {
+    deviceOptions.push({
+      value: selectedDevice,
+      label: `${selectedDevice} (unavailable)`,
+      disabled: true,
+      title:
+        "The saved device is not visible to the current runtime. Restart QwenPaw after installing the matching dependency.",
+    });
+  }
+  return (
+    <div
+      style={{
+        border: "1px solid #f0f0f0",
+        borderRadius: 8,
+        background: "rgba(0, 0, 0, 0.02)",
+        padding: "10px 12px",
+        marginBottom: 12,
+      }}
+    >
+      <Typography.Text
+        type="secondary"
+        style={{ fontSize: 12, display: "block", marginBottom: 8 }}
+      >
+        {t("channels.qwen3SectionHint")}
+      </Typography.Text>
+      <Form.Item
+        name="qwen3_backend"
+        label={t("channels.qwen3Backend")}
+        tooltip={t("channels.qwen3BackendTooltip")}
+        initialValue="api"
+        style={{ marginBottom: 8 }}
+      >
+        <Select
+          options={[
+            { value: "api", label: "DashScope API" },
+            { value: "local", label: "Local (qwen-tts)" },
+          ]}
+        />
+      </Form.Item>
+      <Form.Item
+        noStyle
+        shouldUpdate={(prev, cur) => prev.qwen3_backend !== cur.qwen3_backend}
+      >
+        {({ getFieldValue }) =>
+          (getFieldValue("qwen3_backend") || "api") === "api" ? (
+            <>
+              <Form.Item
+                name="qwen3_model"
+                label={t("channels.qwen3Model")}
+                tooltip={t("channels.qwen3ModelTooltip")}
+                style={{ marginBottom: 8 }}
+              >
+                <Input placeholder="qwen3-tts-flash" />
+              </Form.Item>
+              <Form.Item
+                name="qwen3_ref_audio"
+                label={t("channels.qwen3RefAudio")}
+                tooltip={t("channels.qwen3RefAudioTooltip")}
+                style={{ marginBottom: cloneButton ? 8 : 0 }}
+              >
+                <Input placeholder="/path/to/sample.wav or https://..." />
+              </Form.Item>
+              {cloneButton && (
+                <Form.Item style={{ marginBottom: 0 }}>
+                  <Button
+                    size="small"
+                    loading={cloning}
+                    disabled={cloning}
+                    onClick={() => void cloneVoice()}
+                  >
+                    Clone voice from reference audio
+                  </Button>
+                </Form.Item>
+              )}
+            </>
+          ) : (
+            <>
+              <Form.Item
+                name="qwen3_model_dir"
+                label={t("channels.qwen3ModelDir")}
+                tooltip={t("channels.qwen3ModelDirTooltip")}
+                style={{ marginBottom: 8 }}
+              >
+                <Input placeholder="Qwen/Qwen3-TTS-12Hz-0.6B-Base" />
+              </Form.Item>
+              <Form.Item
+                name="qwen3_ref_audio"
+                label={t("channels.qwen3RefAudio")}
+                tooltip={t("channels.qwen3RefAudioTooltip")}
+                style={{ marginBottom: 8 }}
+              >
+                <Input placeholder="/path/to/sample.wav" />
+              </Form.Item>
+              <Form.Item
+                name="qwen3_ref_text"
+                label={t("channels.qwen3RefText")}
+                tooltip={t("channels.qwen3RefTextTooltip")}
+                style={{ marginBottom: 8 }}
+              >
+                <Input placeholder="Text spoken in the reference audio" />
+              </Form.Item>
+              <Form.Item
+                name="qwen3_device"
+                label={t("channels.qwen3Device")}
+                tooltip={t("channels.qwen3DeviceTooltip")}
+                initialValue="cpu"
+                style={{ marginBottom: 8 }}
+              >
+                <Select
+                  options={deviceOptions}
+                  loading={loadingDevices}
+                  placeholder="Select an inference device"
+                />
+              </Form.Item>
+              <Form.Item style={{ marginBottom: 8 }}>
+                <Button
+                  size="small"
+                  loading={loadingDevices}
+                  onClick={() => void loadDevices()}
+                >
+                  Refresh device list
+                </Button>
+              </Form.Item>
+              <Form.Item
+                name="tts_keep_model_loaded"
+                label={t("channels.ttsKeepModelLoaded")}
+                tooltip={t("channels.ttsKeepModelLoadedTooltip")}
+                valuePropName="checked"
+                initialValue={true}
+                style={{ marginBottom: 0 }}
+              >
+                <Switch />
+              </Form.Item>
+            </>
+          )
+        }
+      </Form.Item>
+    </div>
+  );
 }
 
 export function ChannelDrawer({
@@ -912,6 +1176,346 @@ export function ChannelDrawer({
           </>
         );
 
+      case "local_voice":
+        return (
+          <>
+            <ConfigProvider prefixCls="ant">
+              <Alert
+                type="info"
+                showIcon
+                message={t("channels.localVoiceSetupGuide")}
+                style={{ marginBottom: 16 }}
+              />
+            </ConfigProvider>
+            <Form.Item
+              name="input_device"
+              label={t("channels.localVoiceInputDevice")}
+              tooltip={t("channels.localVoiceInputDeviceTooltip")}
+            >
+              <InputNumber
+                min={0}
+                style={{ width: "100%" }}
+                placeholder="(default)"
+              />
+            </Form.Item>
+            <Form.Item
+              name="output_device"
+              label={t("channels.localVoiceOutputDevice")}
+              tooltip={t("channels.localVoiceOutputDeviceTooltip")}
+            >
+              <InputNumber
+                min={0}
+                style={{ width: "100%" }}
+                placeholder="(default)"
+              />
+            </Form.Item>
+            <Form.Item
+              name="input_sample_rate"
+              label={t("channels.localVoiceInputSampleRate")}
+              tooltip={t("channels.localVoiceInputSampleRateTooltip")}
+              initialValue={16000}
+            >
+              <InputNumber min={8000} max={96000} style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item
+              name="tts_sample_rate"
+              label={t("channels.localVoiceTtsSampleRate")}
+              tooltip={t("channels.localVoiceTtsSampleRateTooltip")}
+              initialValue={24000}
+            >
+              <InputNumber min={8000} max={48000} style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item
+              name="segment_max_turns"
+              label={t("channels.segmentMaxTurns")}
+              tooltip={t("channels.segmentMaxTurnsTooltip")}
+              initialValue={50}
+            >
+              <InputNumber min={1} max={1000} style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item
+              name="tts_provider"
+              label={t("channels.ttsProvider")}
+              tooltip={t("channels.sipTtsProviderTooltip")}
+              initialValue="kokoro"
+            >
+              <Select
+                options={[
+                  { value: "kokoro", label: "Kokoro (local)" },
+                  { value: "edge_tts", label: "Edge TTS (online)" },
+                  { value: "aliyun", label: "Aliyun / DashScope" },
+                  {
+                    value: "openai",
+                    label: "OpenAI-compatible API",
+                  },
+                  {
+                    value: "qwen3",
+                    label: "Qwen3-TTS 0.6B",
+                  },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item
+              noStyle
+              shouldUpdate={(prev, cur) =>
+                prev.tts_provider !== cur.tts_provider
+              }
+            >
+              {({ getFieldValue }) => {
+                const ttsProvider = getFieldValue("tts_provider") || "kokoro";
+                const voicePlaceholder =
+                  ttsProvider === "edge_tts"
+                    ? "zh-CN-XiaoxiaoNeural"
+                    : ttsProvider === "aliyun"
+                    ? "longxiaochun"
+                    : ttsProvider === "openai"
+                    ? "alloy"
+                    : ttsProvider === "qwen3"
+                    ? "Cherry / voice_id"
+                    : "zf_001 / 3";
+                return (
+                  <>
+                    <Form.Item
+                      name="tts_voice"
+                      label={t("channels.ttsVoice")}
+                      tooltip={t("channels.localVoiceTtsVoiceTooltip")}
+                    >
+                      <Input placeholder={voicePlaceholder} />
+                    </Form.Item>
+                    {ttsProvider === "kokoro" && (
+                      <>
+                        <Form.Item
+                          name="kokoro_model_variant"
+                          label="Kokoro model variant"
+                          tooltip={t("channels.sipKokoroModelVariantTooltip")}
+                          initialValue="float32"
+                        >
+                          <Select
+                            options={[
+                              {
+                                value: "float32",
+                                label: "v1.1 · balanced quality",
+                              },
+                              {
+                                value: "int8",
+                                label: "v1.1 int8 · lower CPU use",
+                              },
+                            ]}
+                          />
+                        </Form.Item>
+                        <Form.Item
+                          name="tts_keep_model_loaded"
+                          label={t("channels.ttsKeepModelLoaded")}
+                          tooltip={t("channels.ttsKeepModelLoadedTooltip")}
+                          valuePropName="checked"
+                          initialValue={true}
+                        >
+                          <Switch />
+                        </Form.Item>
+                        <Form.Item
+                          name="kokoro_model_dir"
+                          label={t("channels.sipKokoroModelDir")}
+                          tooltip={t("channels.sipKokoroModelDirTooltip")}
+                        >
+                          <Input placeholder="~/.qwenpaw/models/kokoro-multi-lang-v1_1" />
+                        </Form.Item>
+                        <Form.Item
+                          name="kokoro_num_threads"
+                          label={t("channels.sipKokoroNumThreads")}
+                          tooltip={t("channels.sipKokoroNumThreadsTooltip")}
+                          initialValue={2}
+                        >
+                          <InputNumber
+                            min={1}
+                            max={16}
+                            style={{ width: "100%" }}
+                            placeholder="2"
+                          />
+                        </Form.Item>
+                      </>
+                    )}
+                    {ttsProvider === "openai" && (
+                      <OpenAiSpeechApiFields kind="tts" />
+                    )}
+                    {ttsProvider === "qwen3" && <Qwen3TtsFields />}
+                  </>
+                );
+              }}
+            </Form.Item>
+            <Form.Item
+              name="stt_provider"
+              label={t("channels.sttProvider")}
+              tooltip={t("channels.sipSttProviderTooltip")}
+              initialValue="sherpa_zipformer"
+            >
+              <Select
+                options={[
+                  {
+                    value: "sherpa_zipformer",
+                    label: "X-ASR 480ms zh-en punctuation (local)",
+                  },
+                  { value: "aliyun", label: "Aliyun / DashScope" },
+                  {
+                    value: "openai",
+                    label: "OpenAI-compatible (Whisper)",
+                  },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item
+              noStyle
+              shouldUpdate={(prev, cur) =>
+                prev.stt_provider !== cur.stt_provider
+              }
+            >
+              {({ getFieldValue }) =>
+                getFieldValue("stt_provider") === "sherpa_zipformer" ? (
+                  <>
+                    <Form.Item
+                      name="zipformer_model_dir"
+                      label={t("channels.sipZipformerModelDir")}
+                      tooltip={t("channels.sipZipformerModelDirTooltip")}
+                    >
+                      <Input placeholder="~/.qwenpaw/models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05" />
+                    </Form.Item>
+                    <Form.Item
+                      name="zipformer_num_threads"
+                      label={t("channels.sipZipformerNumThreads")}
+                      tooltip={t("channels.sipZipformerNumThreadsTooltip")}
+                      initialValue={2}
+                    >
+                      <InputNumber
+                        min={1}
+                        max={16}
+                        style={{ width: "100%" }}
+                        placeholder="2"
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      name="asr_keep_model_loaded"
+                      label={t("channels.asrKeepModelLoaded")}
+                      tooltip={t("channels.asrKeepModelLoadedTooltip")}
+                      valuePropName="checked"
+                      initialValue={true}
+                    >
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item
+                      name="wake_word_enabled"
+                      label={t("channels.sipWakeWordEnabled")}
+                      tooltip={t("channels.sipWakeWordEnabledTooltip")}
+                      valuePropName="checked"
+                      initialValue={true}
+                    >
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item
+                      noStyle
+                      shouldUpdate={(prev, cur) =>
+                        prev.wake_word_enabled !== cur.wake_word_enabled
+                      }
+                    >
+                      {({ getFieldValue: getWakeFieldValue }) =>
+                        getWakeFieldValue("wake_word_enabled") ? (
+                          <>
+                            <Form.Item
+                              name="kws_model_dir"
+                              label={t("channels.sipKwsModelDir")}
+                              tooltip={t("channels.sipKwsModelDirTooltip")}
+                            >
+                              <Input placeholder="~/.qwenpaw/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20" />
+                            </Form.Item>
+                            <Form.Item
+                              name="kws_keywords_file"
+                              label={t("channels.sipKwsKeywordsFile")}
+                              tooltip={t("channels.sipKwsKeywordsFileTooltip")}
+                            >
+                              <Input placeholder="keywords.txt path or literal keyword (optional)" />
+                            </Form.Item>
+                            <Form.Item
+                              name="kws_num_threads"
+                              label={t("channels.sipKwsNumThreads")}
+                              tooltip={t("channels.sipKwsNumThreadsTooltip")}
+                              initialValue={1}
+                            >
+                              <InputNumber
+                                min={1}
+                                max={8}
+                                style={{ width: "100%" }}
+                                placeholder="1"
+                              />
+                            </Form.Item>
+                            <Form.Item
+                              name="kws_score"
+                              label={t("channels.kwsScore")}
+                              tooltip={t("channels.kwsScoreTooltip")}
+                              initialValue={1.5}
+                            >
+                              <InputNumber
+                                min={0}
+                                max={10}
+                                step={0.1}
+                                style={{ width: "100%" }}
+                                placeholder="1.5"
+                              />
+                            </Form.Item>
+                            <Form.Item
+                              name="kws_threshold"
+                              label={t("channels.kwsThreshold")}
+                              tooltip={t("channels.kwsThresholdTooltip")}
+                              initialValue={0.25}
+                            >
+                              <InputNumber
+                                min={0}
+                                max={1}
+                                step={0.05}
+                                style={{ width: "100%" }}
+                                placeholder="0.25"
+                              />
+                            </Form.Item>
+                            <Form.Item
+                              name="wake_active_timeout_seconds"
+                              label={t("channels.wakeActiveTimeoutSeconds")}
+                              tooltip={t(
+                                "channels.wakeActiveTimeoutSecondsTooltip",
+                              )}
+                              initialValue={60}
+                            >
+                              <InputNumber
+                                min={5}
+                                max={600}
+                                style={{ width: "100%" }}
+                                placeholder="60"
+                              />
+                            </Form.Item>
+                          </>
+                        ) : null
+                      }
+                    </Form.Item>
+                  </>
+                ) : getFieldValue("stt_provider") === "openai" ? (
+                  <OpenAiSpeechApiFields kind="asr" />
+                ) : null
+              }
+            </Form.Item>
+            <Form.Item
+              name="dashscope_api_key"
+              label={t("channels.sipDashscopeApiKey")}
+              tooltip={t("channels.sipDashscopeApiKeyTooltip")}
+            >
+              <Input.Password placeholder="sk-..." />
+            </Form.Item>
+            <Form.Item
+              name="welcome_greeting"
+              label={t("channels.welcomeGreeting")}
+              tooltip={t("channels.localVoiceWelcomeGreetingTooltip")}
+            >
+              <Input.TextArea rows={2} placeholder="本地语音助手已启动" />
+            </Form.Item>
+            <LocalVoiceTools form={form} />
+          </>
+        );
+
       case "sip":
         return (
           <>
@@ -1003,14 +1607,272 @@ export function ChannelDrawer({
             >
               <Input.Password placeholder="sk-..." />
             </Form.Item>
-            <Form.Item name="tts_provider" label={t("channels.ttsProvider")}>
-              <Input placeholder="aliyun" />
+            <Form.Item
+              name="tts_provider"
+              label={t("channels.ttsProvider")}
+              tooltip={t("channels.sipTtsProviderTooltip")}
+              initialValue="aliyun"
+            >
+              <Select
+                options={[
+                  { value: "aliyun", label: "Aliyun / DashScope" },
+                  { value: "edge_tts", label: "Edge TTS (online)" },
+                  { value: "kokoro", label: "Kokoro (local)" },
+                  {
+                    value: "openai",
+                    label: "OpenAI-compatible API",
+                  },
+                  {
+                    value: "qwen3",
+                    label: "Qwen3-TTS 0.6B",
+                  },
+                ]}
+              />
             </Form.Item>
-            <Form.Item name="tts_voice" label={t("channels.ttsVoice")}>
-              <Input placeholder="longxiaochun" />
+            <Form.Item
+              noStyle
+              shouldUpdate={(prev, cur) =>
+                prev.tts_provider !== cur.tts_provider
+              }
+            >
+              {({ getFieldValue }) => {
+                const ttsProvider = getFieldValue("tts_provider") || "aliyun";
+                const voicePlaceholder =
+                  ttsProvider === "edge_tts"
+                    ? "zh-CN-XiaoxiaoNeural"
+                    : ttsProvider === "kokoro"
+                    ? "zf_001 / 3"
+                    : ttsProvider === "openai"
+                    ? "alloy"
+                    : ttsProvider === "qwen3"
+                    ? "Cherry / voice_id"
+                    : "longxiaochun";
+                return (
+                  <>
+                    <Form.Item
+                      name="tts_voice"
+                      label={t("channels.ttsVoice")}
+                      tooltip={t("channels.localVoiceTtsVoiceTooltip")}
+                    >
+                      <Input placeholder={voicePlaceholder} />
+                    </Form.Item>
+                    {ttsProvider === "kokoro" && (
+                      <>
+                        <Form.Item
+                          name="kokoro_model_variant"
+                          label="Kokoro model variant"
+                          tooltip={t("channels.sipKokoroModelVariantTooltip")}
+                          initialValue="float32"
+                        >
+                          <Select
+                            options={[
+                              {
+                                value: "float32",
+                                label: "v1.1 · balanced quality",
+                              },
+                              {
+                                value: "int8",
+                                label: "v1.1 int8 · lower CPU use",
+                              },
+                            ]}
+                          />
+                        </Form.Item>
+                        <Form.Item
+                          name="tts_keep_model_loaded"
+                          label={t("channels.ttsKeepModelLoaded")}
+                          tooltip={t("channels.ttsKeepModelLoadedTooltip")}
+                          valuePropName="checked"
+                          initialValue={true}
+                        >
+                          <Switch />
+                        </Form.Item>
+                        <Form.Item
+                          name="kokoro_model_dir"
+                          label={t("channels.sipKokoroModelDir")}
+                          tooltip={t("channels.sipKokoroModelDirTooltip")}
+                        >
+                          <Input placeholder="~/.qwenpaw/models/kokoro-multi-lang-v1_1" />
+                        </Form.Item>
+                        <Form.Item
+                          name="kokoro_num_threads"
+                          label={t("channels.sipKokoroNumThreads")}
+                          tooltip={t("channels.sipKokoroNumThreadsTooltip")}
+                          initialValue={2}
+                        >
+                          <InputNumber
+                            min={1}
+                            max={16}
+                            style={{ width: "100%" }}
+                            placeholder="2"
+                          />
+                        </Form.Item>
+                      </>
+                    )}
+                    {ttsProvider === "openai" && (
+                      <OpenAiSpeechApiFields kind="tts" />
+                    )}
+                    {ttsProvider === "qwen3" && (
+                      <Qwen3TtsFields cloneButton />
+                    )}
+                  </>
+                );
+              }}
             </Form.Item>
-            <Form.Item name="stt_provider" label={t("channels.sttProvider")}>
-              <Input placeholder="aliyun" />
+            <Form.Item
+              name="stt_provider"
+              label={t("channels.sttProvider")}
+              tooltip={t("channels.sipSttProviderTooltip")}
+              initialValue="aliyun"
+            >
+              <Select
+                options={[
+                  { value: "aliyun", label: "Aliyun / DashScope" },
+                  {
+                    value: "sherpa_zipformer",
+                    label: "X-ASR 480ms zh-en punctuation (local)",
+                  },
+                  {
+                    value: "openai",
+                    label: "OpenAI-compatible (Whisper)",
+                  },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item
+              noStyle
+              shouldUpdate={(prev, cur) =>
+                prev.stt_provider !== cur.stt_provider
+              }
+            >
+              {({ getFieldValue }) =>
+                getFieldValue("stt_provider") === "sherpa_zipformer" ? (
+                  <>
+                    <Form.Item
+                      name="zipformer_model_dir"
+                      label={t("channels.sipZipformerModelDir")}
+                      tooltip={t("channels.sipZipformerModelDirTooltip")}
+                    >
+                      <Input placeholder="~/.qwenpaw/models/sherpa-onnx-x-asr-480ms-streaming-zipformer-transducer-zh-en-punct-int8-2026-06-05" />
+                    </Form.Item>
+                    <Form.Item
+                      name="zipformer_num_threads"
+                      label={t("channels.sipZipformerNumThreads")}
+                      tooltip={t("channels.sipZipformerNumThreadsTooltip")}
+                      initialValue={2}
+                    >
+                      <InputNumber
+                        min={1}
+                        max={16}
+                        style={{ width: "100%" }}
+                        placeholder="2"
+                      />
+                    </Form.Item>
+                    <Form.Item
+                      name="asr_keep_model_loaded"
+                      label={t("channels.asrKeepModelLoaded")}
+                      tooltip={t("channels.asrKeepModelLoadedTooltip")}
+                      valuePropName="checked"
+                      initialValue={true}
+                    >
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item
+                      name="wake_word_enabled"
+                      label={t("channels.sipWakeWordEnabled")}
+                      tooltip={t("channels.sipWakeWordEnabledTooltip")}
+                      valuePropName="checked"
+                      initialValue={false}
+                    >
+                      <Switch />
+                    </Form.Item>
+                    <Form.Item
+                      noStyle
+                      shouldUpdate={(prev, cur) =>
+                        prev.wake_word_enabled !== cur.wake_word_enabled
+                      }
+                    >
+                      {({ getFieldValue: getWakeFieldValue }) =>
+                        getWakeFieldValue("wake_word_enabled") ? (
+                          <>
+                            <Form.Item
+                              name="kws_model_dir"
+                              label={t("channels.sipKwsModelDir")}
+                              tooltip={t("channels.sipKwsModelDirTooltip")}
+                            >
+                              <Input placeholder="~/.qwenpaw/models/sherpa-onnx-kws-zipformer-zh-en-3M-2025-12-20" />
+                            </Form.Item>
+                            <Form.Item
+                              name="kws_keywords_file"
+                              label={t("channels.sipKwsKeywordsFile")}
+                              tooltip={t("channels.sipKwsKeywordsFileTooltip")}
+                            >
+                              <Input placeholder="keywords.txt path or literal keyword (optional)" />
+                            </Form.Item>
+                            <Form.Item
+                              name="kws_num_threads"
+                              label={t("channels.sipKwsNumThreads")}
+                              tooltip={t("channels.sipKwsNumThreadsTooltip")}
+                              initialValue={1}
+                            >
+                              <InputNumber
+                                min={1}
+                                max={8}
+                                style={{ width: "100%" }}
+                                placeholder="1"
+                              />
+                            </Form.Item>
+                            <Form.Item
+                              name="kws_score"
+                              label={t("channels.kwsScore")}
+                              tooltip={t("channels.kwsScoreTooltip")}
+                              initialValue={1.5}
+                            >
+                              <InputNumber
+                                min={0}
+                                max={10}
+                                step={0.1}
+                                style={{ width: "100%" }}
+                                placeholder="1.5"
+                              />
+                            </Form.Item>
+                            <Form.Item
+                              name="kws_threshold"
+                              label={t("channels.kwsThreshold")}
+                              tooltip={t("channels.kwsThresholdTooltip")}
+                              initialValue={0.25}
+                            >
+                              <InputNumber
+                                min={0}
+                                max={1}
+                                step={0.05}
+                                style={{ width: "100%" }}
+                                placeholder="0.25"
+                              />
+                            </Form.Item>
+                            <Form.Item
+                              name="wake_active_timeout_seconds"
+                              label={t("channels.wakeActiveTimeoutSeconds")}
+                              tooltip={t(
+                                "channels.wakeActiveTimeoutSecondsTooltip",
+                              )}
+                              initialValue={60}
+                            >
+                              <InputNumber
+                                min={5}
+                                max={600}
+                                style={{ width: "100%" }}
+                                placeholder="60"
+                              />
+                            </Form.Item>
+                          </>
+                        ) : null
+                      }
+                    </Form.Item>
+                  </>
+                ) : getFieldValue("stt_provider") === "openai" ? (
+                  <OpenAiSpeechApiFields kind="asr" />
+                ) : null
+              }
             </Form.Item>
             <Form.Item name="language" label={t("channels.language")}>
               <Input placeholder="zh-CN" />
