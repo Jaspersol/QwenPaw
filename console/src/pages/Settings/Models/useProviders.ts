@@ -58,6 +58,15 @@ export function useProviders() {
     fetchAll();
   }, [fetchAll, selectedAgent]);
 
+  useEffect(() => {
+    if (!providers.some((provider) => provider.models_syncing)) return;
+
+    const timer = window.setInterval(() => {
+      void fetchAll(false);
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [fetchAll, providers]);
+
   return {
     providers,
     activeModels,

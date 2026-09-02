@@ -13,6 +13,7 @@ import type {
   LocalModelConfigRequest,
   TestConnectionResponse,
   TestProviderRequest,
+  DiscoverModelsRequest,
   TestModelRequest,
   DiscoverModelsResponse,
   ProbeMultimodalResponse,
@@ -119,6 +120,17 @@ export const providerApi = {
       { method: "DELETE" },
     ),
 
+  setModelVisibility: (providerId: string, modelId: string, hidden: boolean) =>
+    request<ProviderInfo>(
+      `/models/${encodeURIComponent(providerId)}/models/${encodeURIComponent(
+        modelId,
+      )}/visibility`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ hidden }),
+      },
+    ),
+
   configureModel: (
     providerId: string,
     modelId: string,
@@ -164,7 +176,7 @@ export const providerApi = {
 
   discoverModels: (
     providerId: string,
-    body?: TestProviderRequest,
+    body?: DiscoverModelsRequest,
     save: boolean = true,
   ) => {
     const url = new URL(
